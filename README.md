@@ -5,7 +5,8 @@ A self-hosted workout timer, food diary, body-stats tracker and friends feed. On
 ## What it does
 
 - Sign in with a username and password. The first account is the admin; the admin adds everyone else.
-- A beginner routine (editable). Tap sets as you finish them and the rest timer starts. Timed exercises (treadmill, elliptical) have a Start button.
+- A beginner routine you can fully change. Tap sets as you finish them and the rest timer starts. Timed exercises (treadmill, elliptical) have a Start button.
+- Fully customizable workouts: make as many named workouts as you like (Leg Day, Cardio, Quick 20). Add any machine or timer with your own sets, reps, rest time or timer length, and edit or delete any of them. Add a one-off exercise in the middle of a workout, and use the Quick countdown timer for anything else.
 - Lock-screen alerts when a rest ends (Web Push, mirrors to Apple Watch).
 - Body stats in lb and ft/in: BMI, healthy weight range, daily calories, weight chart, streak and weekly CDC goals.
 - Food diary with calories and macros. Search 38 built-in foods, import the free USDA database for thousands more, look up packaged foods by barcode number (Open Food Facts), or add your own.

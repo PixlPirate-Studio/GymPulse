@@ -199,3 +199,6 @@ nav button.on{color:var(--lime);font-weight:700}
 .modal .sheet{background:var(--bg);border:1px solid var(--border);border-radius:22px 22px 0 0;width:100%;max-width:520px;max-height:88vh;overflow:auto;padding:20px 18px calc(26px + env(safe-area-inset-bottom))}
 ul.plain,ol.plain{margin:0;padding-left:20px;line-height:1.6}
 ol.plain li::marker{color:var(--lime);font-weight:800}
+
+.btn.dashed{background:rgba(17,24,39,.6);border:2px dashed var(--line);color:var(--soft);min-height:54px;margin-top:4px}
+.btn.dashed:active{border-color:var(--lime);color:var(--lime)}

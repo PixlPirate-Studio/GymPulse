@@ -40,15 +40,17 @@ ACTIVITY = {
     "very": 1.725,
 }
 
+DEFAULT_PLAN = "Beginner routine"
+# (name, category, tip, kind, sets, seconds, reps) - seconds = rest between sets, or length if timed
 DEFAULT_ROUTINE = [
-    ("Treadmill Warm-Up", "Warm-Up", "8:00 brisk walk to warm up your joints", "timed", 0, 480),
-    ("Seated Leg Press Machine", "Lower Body", "3 sets of 10-12 reps. Rest 1:15 between sets", "sets", 3, 75),
-    ("Lat Pulldown Machine", "Upper Back", "3 sets of 10-12 reps. Pull the bar to your upper chest", "sets", 3, 75),
-    ("Chest Press Machine", "Chest & Arms", "3 sets of 10-12 reps. Handles at mid-chest height", "sets", 3, 75),
-    ("Seated Cable Row", "Mid Back", "3 sets of 10-12 reps. Squeeze your shoulder blades", "sets", 3, 75),
-    ("Bodyweight or Assisted Squats", "Legs & Core", "3 sets of 8-10 reps. Hold a support if you need it", "sets", 3, 75),
-    ("Elliptical Finisher", "Cardio", "12:00 at a steady, comfortable pace", "timed", 0, 720),
-    ("Cool Down & Stretch", "Recovery", "4:00 slow walk, then gentle chest, back and leg stretches", "timed", 0, 240),
+    ("Treadmill Warm-Up", "Warm-Up", "Brisk walk to warm up your joints", "timed", 0, 480, ""),
+    ("Seated Leg Press Machine", "Lower Body", "Push through your heels", "sets", 3, 75, "10-12"),
+    ("Lat Pulldown Machine", "Upper Back", "Pull the bar to your upper chest", "sets", 3, 75, "10-12"),
+    ("Chest Press Machine", "Chest & Arms", "Handles at mid-chest height", "sets", 3, 75, "10-12"),
+    ("Seated Cable Row", "Mid Back", "Squeeze your shoulder blades together", "sets", 3, 75, "10-12"),
+    ("Bodyweight or Assisted Squats", "Legs & Core", "Hold a support if you need it", "sets", 3, 75, "8-10"),
+    ("Elliptical Finisher", "Cardio", "Steady, comfortable pace", "timed", 0, 720, ""),
+    ("Cool Down & Stretch", "Recovery", "Slow walk, then gentle chest, back and leg stretches", "timed", 0, 240, ""),
 ]
 
 # Starter foods (approximate, typical values). Import the USDA files with
@@ -125,14 +127,23 @@ CREATE TABLE IF NOT EXISTS routine(
   name TEXT NOT NULL, category TEXT DEFAULT '', note TEXT DEFAULT '',
   kind TEXT NOT NULL DEFAULT 'sets',
   sets_total INTEGER NOT NULL DEFAULT 3,
-  seconds INTEGER NOT NULL DEFAULT 75
+  seconds INTEGER NOT NULL DEFAULT 75,
+  reps TEXT DEFAULT '',
+  plan TEXT NOT NULL DEFAULT 'Beginner routine'
+);
+CREATE TABLE IF NOT EXISTS plans(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  UNIQUE(user_id, name)
 );
 CREATE TABLE IF NOT EXISTS sessions(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   date TEXT NOT NULL, started_at INTEGER NOT NULL,
   ended_at INTEGER, duration_sec INTEGER DEFAULT 0,
-  strength INTEGER DEFAULT 0
+  strength INTEGER DEFAULT 0,
+  plan TEXT DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS session_exercises(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -140,7 +151,9 @@ CREATE TABLE IF NOT EXISTS session_exercises(
   routine_id INTEGER, name TEXT NOT NULL,
   kind TEXT NOT NULL, sets_total INTEGER NOT NULL DEFAULT 0,
   sets_done INTEGER NOT NULL DEFAULT 0,
-  completed INTEGER NOT NULL DEFAULT 0
+  completed INTEGER NOT NULL DEFAULT 0,
+  category TEXT DEFAULT '', note TEXT DEFAULT '', reps TEXT DEFAULT '',
+  seconds INTEGER NOT NULL DEFAULT 75
 );
 CREATE TABLE IF NOT EXISTS friendships(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -248,6 +261,17 @@ def create_app():
 
     with connect() as boot:
         boot.executescript(SCHEMA)
+        for table, col, ddl in (("routine", "reps", "TEXT DEFAULT ''"),
+                                ("routine", "plan", "TEXT NOT NULL DEFAULT 'Beginner routine'"),
+                                ("sessions", "plan", "TEXT DEFAULT ''"),
+                                ("session_exercises", "category", "TEXT DEFAULT ''"),
+                                ("session_exercises", "note", "TEXT DEFAULT ''"),
+                                ("session_exercises", "reps", "TEXT DEFAULT ''"),
+                                ("session_exercises", "seconds", "INTEGER NOT NULL DEFAULT 75")):
+            have = [r[1] for r in boot.execute("PRAGMA table_info(%s)" % table)]
+            if col not in have:
+                boot.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, col, ddl))
+        boot.execute("INSERT OR IGNORE INTO plans(user_id,name) SELECT DISTINCT user_id, plan FROM routine")
         if boot.execute("SELECT COUNT(*) FROM foods WHERE owner_id IS NULL").fetchone()[0] == 0:
             boot.executemany(
                 "INSERT INTO foods(owner_id,name,serving,calories,protein,carbs,fat,source) "
@@ -364,11 +388,12 @@ def create_app():
         return uid, None
 
     def load_default_routine(uid):
-        db().execute("DELETE FROM routine WHERE user_id=?", (uid,))
-        for pos, (name, cat, note, kind, sets, secs) in enumerate(DEFAULT_ROUTINE):
+        db().execute("DELETE FROM routine WHERE user_id=? AND plan=?", (uid, DEFAULT_PLAN))
+        db().execute("INSERT OR IGNORE INTO plans(user_id,name) VALUES(?,?)", (uid, DEFAULT_PLAN))
+        for pos, (name, cat, note, kind, sets, secs, reps) in enumerate(DEFAULT_ROUTINE):
             db().execute(
-                "INSERT INTO routine(user_id,position,name,category,note,kind,sets_total,seconds) "
-                "VALUES(?,?,?,?,?,?,?,?)", (uid, pos, name, cat, note, kind, sets, secs))
+                "INSERT INTO routine(user_id,position,name,category,note,kind,sets_total,seconds,reps,plan) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)", (uid, pos, name, cat, note, kind, sets, secs, reps, DEFAULT_PLAN))
 
     # ---- login rate limit (in memory) ----
     attempts = {}
@@ -570,32 +595,52 @@ def create_app():
         if not name:
             return None, "Please give the exercise a name."
         kind = b.get("kind") if b.get("kind") in ("sets", "timed") else cur.get("kind", "sets")
-        sets = int(num(b.get("sets_total"), 0, 10, cur.get("sets_total", 3)))
+        sets = int(num(b.get("sets_total"), 0, 20, cur.get("sets_total", 3)))
         if kind == "timed":
             sets = 0
         elif sets < 1:
             sets = 3
-        secs = int(num(b.get("seconds"), 5, 7200, cur.get("seconds", 75)))
-        return {"name": name, "category": text(b.get("category"), 40) if "category" in b else cur.get("category", ""),
+        secs = num(b.get("seconds"), 5, 10800, None)
+        if secs is None:
+            if "seconds" in b:
+                return None, "Please enter a time of at least 5 seconds."
+            secs = cur.get("seconds", 75)
+        return {"name": name,
+                "category": text(b.get("category"), 40) if "category" in b else cur.get("category", ""),
                 "note": text(b.get("note"), 200) if "note" in b else cur.get("note", ""),
-                "kind": kind, "sets_total": sets, "seconds": secs}, None
+                "reps": text(b.get("reps"), 20) if "reps" in b else cur.get("reps", ""),
+                "kind": kind, "sets_total": sets, "seconds": int(secs)}, None
+
+    def plan_names(uid):
+        return [r["name"] for r in rows("SELECT name FROM plans WHERE user_id=? ORDER BY id", (uid,))]
+
+    def clean_plan(v, uid):
+        name = text(v, 40)
+        return name if name else (plan_names(uid) or [DEFAULT_PLAN])[0]
 
     @app.get("/api/routine")
     @login_required()
     def api_routine_get():
         return jsonify({"routine": rows(
-            "SELECT * FROM routine WHERE user_id=? ORDER BY position, id", (g.user["id"],))})
+            "SELECT * FROM routine WHERE user_id=? ORDER BY position, id", (g.user["id"],)),
+            "plans": plan_names(g.user["id"])})
 
     @app.post("/api/routine")
     @login_required()
     def api_routine_add():
+        uid = g.user["id"]
         ex, problem = clean_exercise(body())
         if problem:
             return err(problem)
-        pos = one("SELECT COALESCE(MAX(position),-1)+1 AS p FROM routine WHERE user_id=?", (g.user["id"],))["p"]
+        plan = clean_plan(body().get("plan"), uid)
+        if plan not in plan_names(uid):
+            return err("That workout doesn't exist.", 404)
+        pos = one("SELECT COALESCE(MAX(position),-1)+1 AS p FROM routine WHERE user_id=? AND plan=?", (uid, plan))["p"]
         db().execute(
-            "INSERT INTO routine(user_id,position,name,category,note,kind,sets_total,seconds) VALUES(?,?,?,?,?,?,?,?)",
-            (g.user["id"], pos, ex["name"], ex["category"] or "Custom", ex["note"], ex["kind"], ex["sets_total"], ex["seconds"]))
+            "INSERT INTO routine(user_id,position,name,category,note,kind,sets_total,seconds,reps,plan) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (uid, pos, ex["name"], ex["category"] or "Custom", ex["note"], ex["kind"], ex["sets_total"],
+             ex["seconds"], ex["reps"], plan))
         db().commit()
         return api_routine_get()
 
@@ -608,8 +653,8 @@ def create_app():
         ex, problem = clean_exercise(body(), cur)
         if problem:
             return err(problem)
-        db().execute("UPDATE routine SET name=?,category=?,note=?,kind=?,sets_total=?,seconds=? WHERE id=?",
-                     (ex["name"], ex["category"], ex["note"], ex["kind"], ex["sets_total"], ex["seconds"], rid))
+        db().execute("UPDATE routine SET name=?,category=?,note=?,kind=?,sets_total=?,seconds=?,reps=? WHERE id=?",
+                     (ex["name"], ex["category"], ex["note"], ex["kind"], ex["sets_total"], ex["seconds"], ex["reps"], rid))
         db().commit()
         return api_routine_get()
 
@@ -624,9 +669,11 @@ def create_app():
     @login_required()
     def api_routine_move(rid):
         direction = -1 if body().get("direction") == "up" else 1
-        items = rows("SELECT id FROM routine WHERE user_id=? ORDER BY position, id", (g.user["id"],))
-        ids = [r["id"] for r in items]
-        if rid in ids:
+        cur = one("SELECT plan FROM routine WHERE id=? AND user_id=?", (rid, g.user["id"]))
+        if cur:
+            items = rows("SELECT id FROM routine WHERE user_id=? AND plan=? ORDER BY position, id",
+                         (g.user["id"], cur["plan"]))
+            ids = [r["id"] for r in items]
             i = ids.index(rid)
             j = i + direction
             if 0 <= j < len(ids):
@@ -643,12 +690,66 @@ def create_app():
         db().commit()
         return api_routine_get()
 
+    # ---- named workouts (plans) ----
+    @app.post("/api/plans")
+    @login_required()
+    def api_plan_create():
+        uid, b = g.user["id"], body()
+        name = text(b.get("name"), 40)
+        if not name:
+            return err("Please name your workout.")
+        if name in plan_names(uid):
+            return err("You already have a workout with that name.")
+        db().execute("INSERT INTO plans(user_id,name) VALUES(?,?)", (uid, name))
+        src = text(b.get("copy_from"), 40)
+        if src in plan_names(uid):
+            for r in rows("SELECT * FROM routine WHERE user_id=? AND plan=? ORDER BY position, id", (uid, src)):
+                db().execute(
+                    "INSERT INTO routine(user_id,position,name,category,note,kind,sets_total,seconds,reps,plan) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (uid, r["position"], r["name"], r["category"], r["note"], r["kind"], r["sets_total"],
+                     r["seconds"], r["reps"], name))
+        db().commit()
+        return api_routine_get()
+
+    @app.put("/api/plans")
+    @login_required()
+    def api_plan_rename():
+        uid, b = g.user["id"], body()
+        old, new = text(b.get("old"), 40), text(b.get("new"), 40)
+        if old not in plan_names(uid) or not new:
+            return err("Not found.", 404)
+        if new != old and new in plan_names(uid):
+            return err("You already have a workout with that name.")
+        db().execute("UPDATE plans SET name=? WHERE user_id=? AND name=?", (new, uid, old))
+        db().execute("UPDATE routine SET plan=? WHERE user_id=? AND plan=?", (new, uid, old))
+        db().commit()
+        return api_routine_get()
+
+    @app.delete("/api/plans")
+    @login_required()
+    def api_plan_delete():
+        uid = g.user["id"]
+        name = text(request.args.get("name"), 40)
+        names = plan_names(uid)
+        if name not in names:
+            return err("Not found.", 404)
+        if len(names) <= 1:
+            return err("You need at least one workout.")
+        db().execute("DELETE FROM routine WHERE user_id=? AND plan=?", (uid, name))
+        db().execute("DELETE FROM plans WHERE user_id=? AND name=?", (uid, name))
+        db().commit()
+        return api_routine_get()
+
     # =====================================================================
     # Workout sessions
     # =====================================================================
     def session_payload(s):
         exs = rows("SELECT * FROM session_exercises WHERE session_id=? ORDER BY id", (s["id"],))
         return {"session": s, "exercises": exs}
+
+    def own_active_session(sid):
+        return one("SELECT * FROM sessions WHERE id=? AND user_id=? AND ended_at IS NULL", (sid, g.user["id"]))
 
     @app.get("/api/session/active")
     @login_required()
@@ -664,17 +765,21 @@ def create_app():
     @app.post("/api/session/start")
     @login_required()
     def api_session_start():
-        existing = one("SELECT * FROM sessions WHERE user_id=? AND ended_at IS NULL ORDER BY id DESC LIMIT 1",
-                       (g.user["id"],))
+        uid = g.user["id"]
+        existing = one("SELECT * FROM sessions WHERE user_id=? AND ended_at IS NULL ORDER BY id DESC LIMIT 1", (uid,))
         if existing and now() - existing["started_at"] <= 12 * 3600:
             return jsonify(session_payload(existing))
-        cur = db().execute("INSERT INTO sessions(user_id,date,started_at) VALUES(?,?,?)",
-                           (g.user["id"], valid_date(body().get("date")), now()))
+        plan = clean_plan(body().get("plan"), uid)
+        if plan not in plan_names(uid):
+            return err("That workout doesn't exist.", 404)
+        cur = db().execute("INSERT INTO sessions(user_id,date,started_at,plan) VALUES(?,?,?,?)",
+                           (uid, valid_date(body().get("date")), now(), plan))
         sid = cur.lastrowid
-        for r in rows("SELECT * FROM routine WHERE user_id=? ORDER BY position, id", (g.user["id"],)):
+        for r in rows("SELECT * FROM routine WHERE user_id=? AND plan=? ORDER BY position, id", (uid, plan)):
             db().execute(
-                "INSERT INTO session_exercises(session_id,routine_id,name,kind,sets_total) VALUES(?,?,?,?,?)",
-                (sid, r["id"], r["name"], r["kind"], r["sets_total"]))
+                "INSERT INTO session_exercises(session_id,routine_id,name,kind,sets_total,category,note,reps,seconds) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
+                (sid, r["id"], r["name"], r["kind"], r["sets_total"], r["category"], r["note"], r["reps"], r["seconds"]))
         db().commit()
         return jsonify(session_payload(one("SELECT * FROM sessions WHERE id=?", (sid,))))
 
@@ -693,6 +798,69 @@ def create_app():
             done = 0
             completed = 1 if b.get("completed") else 0
         db().execute("UPDATE session_exercises SET sets_done=?, completed=? WHERE id=?", (done, completed, seid))
+        db().commit()
+        return jsonify(session_payload(s))
+
+    @app.post("/api/session/<int:sid>/exercises")
+    @login_required()
+    def api_session_add_exercise(sid):
+        s = own_active_session(sid)
+        if not s:
+            return err("Not found.", 404)
+        b = body()
+        ex, problem = clean_exercise(b)
+        if problem:
+            return err(problem)
+        rid = None
+        if b.get("save_to_plan") and s["plan"] in plan_names(g.user["id"]):
+            pos = one("SELECT COALESCE(MAX(position),-1)+1 AS p FROM routine WHERE user_id=? AND plan=?",
+                      (g.user["id"], s["plan"]))["p"]
+            rid = db().execute(
+                "INSERT INTO routine(user_id,position,name,category,note,kind,sets_total,seconds,reps,plan) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (g.user["id"], pos, ex["name"], ex["category"] or "Custom", ex["note"], ex["kind"],
+                 ex["sets_total"], ex["seconds"], ex["reps"], s["plan"])).lastrowid
+        db().execute(
+            "INSERT INTO session_exercises(session_id,routine_id,name,kind,sets_total,category,note,reps,seconds) "
+            "VALUES(?,?,?,?,?,?,?,?,?)",
+            (sid, rid, ex["name"], ex["kind"], ex["sets_total"], ex["category"] or "Custom", ex["note"], ex["reps"], ex["seconds"]))
+        db().commit()
+        return jsonify(session_payload(s))
+
+    @app.put("/api/session/<int:sid>/exercise/<int:seid>")
+    @login_required()
+    def api_session_edit_exercise(sid, seid):
+        s = own_active_session(sid)
+        cur = one("SELECT * FROM session_exercises WHERE id=? AND session_id=?", (seid, sid))
+        if not s or not cur:
+            return err("Not found.", 404)
+        b = body()
+        ex, problem = clean_exercise(b, cur)
+        if problem:
+            return err(problem)
+        done, completed = cur["sets_done"], cur["completed"]
+        if ex["kind"] != cur["kind"]:
+            done, completed = 0, 0
+        elif ex["kind"] == "sets":
+            done = min(done, ex["sets_total"])
+            completed = 1 if done >= ex["sets_total"] else 0
+        db().execute(
+            "UPDATE session_exercises SET name=?,kind=?,sets_total=?,category=?,note=?,reps=?,seconds=?,sets_done=?,completed=? WHERE id=?",
+            (ex["name"], ex["kind"], ex["sets_total"], ex["category"], ex["note"], ex["reps"], ex["seconds"], done, completed, seid))
+        if b.get("save_to_plan") and cur["routine_id"]:
+            db().execute("UPDATE routine SET name=?,category=?,note=?,kind=?,sets_total=?,seconds=?,reps=? WHERE id=? AND user_id=?",
+                         (ex["name"], ex["category"], ex["note"], ex["kind"], ex["sets_total"], ex["seconds"], ex["reps"],
+                          cur["routine_id"], g.user["id"]))
+        db().commit()
+        return jsonify(session_payload(s))
+
+    @app.delete("/api/session/<int:sid>/exercise/<int:seid>")
+    @login_required()
+    def api_session_delete_exercise(sid, seid):
+        s = own_active_session(sid)
+        if not s:
+            return err("Not found.", 404)
+        db().execute("DELETE FROM session_exercises WHERE id=? AND session_id=?", (seid, sid))
         db().commit()
         return jsonify(session_payload(s))
 

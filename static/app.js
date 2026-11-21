@@ -34,7 +34,8 @@ const P = {
   lock: 'M5 11h14v10H5zM8 11V7a4 4 0 118 0v4',
   dots: 'M12 6h.01M12 12h.01M12 18h.01',
   tick: 'M5 13l4 4L19 7',
-  chev: 'M15 19l-7-7 7-7'
+  chev: 'M15 19l-7-7 7-7',
+  edit: 'M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z'
 };
 const I = (n, extra) => '<svg class="ic ' + (extra || '') + '" viewBox="0 0 24 24" aria-hidden="true"><path d="' + P[n] + '"/></svg>';
 const IF = (d) => '<svg class="ic fill" viewBox="0 0 24 24" aria-hidden="true"><path d="' + d + '"/></svg>';
@@ -42,7 +43,7 @@ const PLAY = 'M8 5v14l11-7z', PAUSE = 'M6 4h4v16H6V4zm8 0h4v16h-4V4z';
 const HEART = 'M12 21s-7-4.5-9.5-9A5.5 5.5 0 0112 6a5.5 5.5 0 019.5 6C19 16.5 12 21 12 21z';
 const FLAME = 'M12 2c1 4-3 5-3 9a3 3 0 006 0c0-1-.3-1.8-1-2.7 3 1.2 5 4 5 7.2a7 7 0 11-14 0c0-5 4-6.5 7-13.5z';
 
-const S = { me: null, tab: 'today', foodDate: todayStr(), friendView: 'board', histMonth: todayStr().slice(0, 7), profile: null, stats: null, session: null, exercises: [], routine: [], focus: null, pushOn: false, recipeFilter: 'all', openMeal: null, pageFn: null };
+const S = { me: null, tab: 'today', foodDate: todayStr(), friendView: 'board', histMonth: todayStr().slice(0, 7), profile: null, stats: null, session: null, exercises: [], routine: [], focus: null, plans: [], plan: (function () { try { return localStorage.getItem('gp_plan') || null; } catch (e) { return null; } })(), pushOn: false, recipeFilter: 'all', openMeal: null, pageFn: null };
 let timer = null;
 try { timer = JSON.parse(localStorage.getItem('gp_timer') || 'null'); } catch (e) { timer = null; }
 let tickHandle = null;
@@ -151,7 +152,7 @@ function startTimer(seconds, label, opts) {
   opts = opts || {};
   timer = { endAt: Date.now() + seconds * 1000, total: seconds, label: label || 'Rest', exId: opts.exId || null, kind: opts.kind || 'rest', paused: false, alerted: false };
   saveTimer();
-  POST('/api/timer', { seconds, title: (label || 'Rest') + ' is over', body: opts.kind === 'timed' ? 'Nice work. Tap to log it.' : 'Time to get going again.' }).catch(() => {});
+  POST('/api/timer', { seconds, title: (label || 'Rest') + ' is over', body: opts.kind === 'timed' ? 'Nice work. Tap to log it.' : opts.kind === 'quick' ? 'Your timer is done.' : 'Time to get going again.' }).catch(() => {});
   if (S.profile && S.profile.apple_timer && !opts.noShortcut) {
     const name = encodeURIComponent(S.profile.shortcut_name || 'GymPulse Timer');
     setTimeout(() => { window.location.href = 'shortcuts://run-shortcut?name=' + name + '&input=text&text=' + Math.round(seconds); }, 150);
@@ -189,7 +190,7 @@ const leftSec = () => (timer.paused ? timer.leftMs : timer.endAt - Date.now()) /
 function timerPanel() {
   if (!timer) return '';
   const left = leftSec(), over = left <= 0 && !timer.paused;
-  const label = timer.kind === 'timed' ? esc(timer.label) : 'Rest timer';
+  const label = timer.kind === 'rest' ? 'Rest timer' : esc(timer.label);
   return '<div class="rest' + (over ? ' over' : '') + '" id="rest"><div class="row between"><div><div class="eyebrow">' + label + '</div><div class="time" id="rest-time">' + (over ? 'GO!' : clock(Math.ceil(left))) + '</div></div>' +
     (over ? '' : '<div class="row gap6"><button class="adj" data-a="timer-adj" data-d="-15">-15s</button><button class="adj" data-a="timer-adj" data-d="15">+15s</button><button class="adj" data-a="timer-adj" data-d="60">+1m</button></div>') + '</div>' +
     '<div class="spacer" style="height:10px"></div>' +
@@ -223,9 +224,15 @@ function sessElapsed() { const st = sessState(); const end = st.pausedAt || Date
 // ---------- Today ----------
 async function loadToday() {
   const [prof, act, rt, prog] = await Promise.all([GET('/api/profile'), GET('/api/session/active'), GET('/api/routine'), GET('/api/progress?today=' + todayStr())]);
-  S.profile = prof.profile; S.stats = prof.stats; S.session = act.session; S.exercises = act.exercises; S.routine = rt.routine; S.prog = prog;
+  S.profile = prof.profile; S.stats = prof.stats; S.session = act.session; S.exercises = act.exercises; S.routine = rt.routine; S.plans = rt.plans; S.prog = prog;
+  if (S.plans.indexOf(S.plan) < 0) setPlan(S.plans[0]);
 }
-const exSecs = (e) => { const r = S.routine.find((x) => x.id === e.routine_id) || {}; return { secs: r.seconds || (e.kind === 'timed' ? 300 : 75), note: r.note || '', cat: r.category || '' }; };
+const exSecs = (e) => ({ secs: e.seconds || (e.kind === 'timed' ? 300 : 75), note: e.note || '', cat: e.category || '' });
+const exSub = (e) => e.kind === 'timed' ? mmss(e.seconds) + ' timer' : e.sets_total + ' sets' + (e.reps ? ' of ' + esc(e.reps) + ' reps' : '') + ' · rest ' + mmss(e.seconds);
+const exPencil = (mode, id) => '<button class="sq" style="width:40px;height:40px" data-a="ex-edit" data-m="' + mode + '" data-id="' + id + '" aria-label="Edit exercise">' + I('edit') + '</button>';
+const addButtons = (mode) => '<button class="btn dashed block" data-a="ex-add" data-m="' + mode + '">' + I('plus') + ' Add custom machine / timer</button><div style="height:8px"></div><button class="btn dashed block" data-a="quick-timer" style="min-height:48px">' + I('clock') + ' Quick countdown timer</button>';
+const planChips = () => '<div class="chips" style="flex-wrap:wrap;overflow:visible">' + S.plans.map((p) => '<button data-a="plan-pick" data-p="' + esc(p) + '" class="' + (p === S.plan ? 'on' : '') + '">' + esc(p) + '</button>').join('') + '<button data-a="plan-new">+ New workout</button></div>';
+function setPlan(p) { S.plan = p; try { localStorage.setItem('gp_plan', p); } catch (e) {} }
 const streakPill = (n) => n > 0 ? '<span class="pill">' + IF(FLAME) + n + '-day streak</span>' : '<span></span>';
 const startLink = () => '<a href="#" data-a="guide" style="display:flex;align-items:center;gap:6px;min-height:44px;font-size:13px;color:var(--cyan);font-weight:700;text-decoration:none">New here? Start here ' + I('next').replace('class="ic ', 'style="width:14px;height:14px;stroke-width:2.6" class="ic ') + '</a>';
 
@@ -234,57 +241,107 @@ async function viewToday() {
   const s = S.session, p = S.prog;
   let h = '';
   if (!s) {
+    const list = S.routine.filter((r) => r.plan === S.plan);
     h += '<div class="head"><div><h1 class="title">Today</h1><p class="sub">' + esc(motivation(p)) + '</p></div></div>';
     if (isIOS() && !isStandalone()) h += '<div class="card hi tight"><b>Install GymPulse on your iPhone</b><div class="small muted" style="margin-top:4px">Tap the Share button in Safari, then "Add to Home Screen". It opens full screen and can buzz you when a rest is over.</div></div>';
     h += '<div class="row between">' + startLink() + streakPill(p.streak) + '</div>';
-    h += '<div id="rest-slot"></div><div class="spacer"></div>';
-    S.routine.forEach((r, i) => {
-      h += '<div class="exc"><div class="row gap12"><div class="cbox"></div><div><div class="eyebrow" style="font-size:10px">#' + (i + 1) + ' · ' + esc(r.category || 'Exercise') + '</div><div style="font-size:16px;font-weight:800">' + esc(r.name) + '</div><div class="small muted">' + (r.kind === 'timed' ? mmss(r.seconds) + ' timed' : r.sets_total + ' sets · rest ' + mmss(r.seconds)) + '</div></div></div></div>';
+    h += '<div id="rest-slot">' + (timer ? timerPanel() : '') + '</div>' + planChips();
+    list.forEach((r, i) => {
+      h += '<div class="exc"><div class="row gap12" style="min-width:0"><div class="cbox"></div><div style="min-width:0"><div class="eyebrow" style="font-size:10px">#' + (i + 1) + ' · ' + esc(r.category || 'Exercise') + '</div><div style="font-size:16px;font-weight:800">' + esc(r.name) + '</div><div class="small muted">' + exSub(r) + '</div></div></div>' + exPencil('plan', r.id) + '</div>';
     });
-    if (!S.routine.length) h += '<div class="card muted">Your routine is empty. Add exercises in Settings → My routine.</div>';
-    h += '<div class="spacer"></div><button class="btn block" data-a="start-workout"' + (S.routine.length ? '' : ' disabled') + '>Start workout</button>';
+    if (!list.length) h += '<div class="card muted">This workout is empty. Add your first exercise below.</div>';
+    h += addButtons('plan') + '<div class="spacer"></div><button class="btn block" data-a="start-workout"' + (list.length ? '' : ' disabled') + ' style="min-height:56px;font-size:16px">Start ' + esc(S.plan) + '</button>';
     setApp(h); ensureTick(); return;
   }
 
   const done = S.exercises.filter((e) => e.completed).length, total = S.exercises.length;
   const paused = !!sessState().pausedAt;
+  const quick = !!(timer && timer.kind === 'quick');
   h += '<div class="sessbar"><div class="row between"><div><div class="eyebrow">Session time</div><div class="row gap8"><span class="clock" id="sess-clock">' + hms(sessElapsed()) + '</span>' +
     '<button class="btn alt sm" style="color:var(--lime);min-height:32px;padding:0 12px;font-size:12px" data-a="sess-pause">' + (paused ? 'Resume' : 'Pause') + '</button></div></div>' +
     '<div class="row gap8"><button class="sq" data-a="test-sound" aria-label="Test sound" style="color:var(--cyan)">' + I('speaker') + '</button><button class="btn alt" style="min-height:44px;padding:0 14px;font-size:13px" data-a="finish-workout">Finish</button></div></div>' +
     '<div style="margin-top:10px"><div class="row between small" style="margin-bottom:5px"><span class="muted" style="font-weight:500">Workout progress</span><span class="mono lime" style="font-weight:700">' + done + ' / ' + total + ' Completed</span></div><div class="bar8"><i style="width:' + (total ? done / total * 100 : 0) + '%"></i></div></div></div>';
   h += '<div class="row between">' + startLink() + streakPill(p.streak) + '</div><div class="spacer" style="height:6px"></div>';
+  if (quick) h += '<div id="rest-slot" class="card hi" style="padding:12px">' + timerPanel() + '</div>';
 
-  let cur = S.exercises.find((e) => e.id === S.focus && !e.completed) || S.exercises.find((e) => !e.completed);
+  const cur = S.exercises.find((e) => e.id === S.focus && !e.completed) || S.exercises.find((e) => !e.completed);
   if (!cur) {
-    h += '<div class="exc cur"><div style="font-size:18px;font-weight:800">That\'s everything. Great work!</div><div class="small muted">Tap Finish to save your workout.</div><div id="rest-slot">' + (timer ? timerPanel() : '') + '</div><button class="btn block" data-a="finish-workout">Finish workout</button></div>';
+    h += '<div class="exc cur"><div style="font-size:18px;font-weight:800">That\'s everything. Great work!</div><div class="small muted">Tap Finish to save your workout, or add one more exercise below.</div>' + (quick ? '' : '<div id="rest-slot">' + (timer ? timerPanel() : '') + '</div>') + '<button class="btn block" data-a="finish-workout">Finish workout</button></div>';
   }
   S.exercises.forEach((e, i) => {
     const x = exSecs(e), isCur = cur && e.id === cur.id;
     if (isCur) {
-      const running = !!timer;
-      h += '<div class="exc cur"><div class="row gap12" style="align-items:flex-start"><button class="cbox' + (e.completed ? ' on' : '') + '" style="margin-top:2px" data-a="toggle-ex" data-id="' + e.id + '" aria-label="Mark done">' + (e.completed ? I('check') : '') + '</button><div style="min-width:0">' +
+      const running = !!timer && !quick;
+      h += '<div class="exc cur"><div class="row gap12" style="align-items:flex-start"><button class="cbox' + (e.completed ? ' on' : '') + '" style="margin-top:2px" data-a="toggle-ex" data-id="' + e.id + '" aria-label="Mark done">' + (e.completed ? I('check') : '') + '</button><div class="grow" style="min-width:0">' +
         '<div class="row gap6"><span class="badge">#' + (i + 1) + (x.cat ? ' · ' + esc(x.cat) : '') + '</span>' + (running ? '<span class="badge cyan">Running</span>' : '') + '</div>' +
-        '<h3 style="margin:5px 0 0;font-size:18px;font-weight:800;line-height:1.2">' + esc(e.name) + '</h3><p class="small muted" style="margin-top:3px;font-size:12px">' + esc(x.note) + '</p></div></div>';
+        '<h3 style="margin:5px 0 0;font-size:18px;font-weight:800;line-height:1.2">' + esc(e.name) + '</h3><p class="small soft" style="margin-top:3px;font-size:13px">' + exSub(e) + '</p>' + (x.note ? '<p class="small muted" style="margin-top:2px;font-size:12px">' + esc(x.note) + '</p>' : '') + '</div>' + exPencil('session', e.id) + '</div>';
       if (e.kind === 'sets') {
         h += '<div class="setrow">';
         for (let n = 1; n <= e.sets_total; n++) h += '<button class="setbtn' + (n <= e.sets_done ? ' on' : '') + '" data-a="set" data-id="' + e.id + '" data-n="' + n + '" data-done="' + e.sets_done + '" data-secs="' + x.secs + '" data-name="' + esc(e.name) + '">' + (n <= e.sets_done ? I('check') : '<span class="o"></span>') + 'Set ' + n + '</button>';
-        h += '</div><div id="rest-slot">' + (timer ? timerPanel() : '') + '</div>';
-        if (!timer) h += '<div class="buzz" style="color:var(--muted)">' + I('bell') + 'Tap a set when you finish it. Your rest starts automatically.</div>';
+        h += '</div>' + (quick ? '' : '<div id="rest-slot">' + (timer ? timerPanel() : '') + '</div>');
+        if (!timer || quick) h += '<div class="buzz" style="color:var(--muted)">' + I('bell') + 'Tap a set when you finish it. Your ' + mmss(x.secs) + ' rest starts automatically.</div>';
       } else {
-        h += '<div id="rest-slot">' + (timer && timer.exId === e.id ? timerPanel() : '') + '</div>';
+        h += (quick ? '' : '<div id="rest-slot">' + (timer && timer.exId === e.id ? timerPanel() : '') + '</div>');
         if (!(timer && timer.exId === e.id)) h += '<div class="row gap8"><button class="btn" style="flex:1;min-height:48px" data-a="timed-start" data-id="' + e.id + '" data-secs="' + x.secs + '" data-name="' + esc(e.name) + '">' + IF(PLAY) + 'Start ' + mmss(x.secs) + '</button></div>';
         else h += '<button class="btn alt block" data-a="timed-done" data-id="' + e.id + '" data-v="1">Mark done</button>';
       }
       h += '</div>';
     } else {
-      h += '<div class="exc' + (e.completed ? ' done' : '') + '" data-a="focus" data-id="' + e.id + '" style="cursor:pointer"><div class="row gap12" style="min-width:0"><button class="cbox' + (e.completed ? ' on' : '') + '" data-a="toggle-ex" data-id="' + e.id + '" aria-label="Toggle done">' + (e.completed ? I('check') : '') + '</button><div style="min-width:0"><div class="eyebrow" style="font-size:10px">#' + (i + 1) + (x.cat ? ' · ' + esc(x.cat) : '') + (e.kind === 'timed' ? ' · timed' : '') + '</div>' +
-        '<div style="font-size:16px;font-weight:800">' + esc(e.name) + '</div><div class="small muted">' + (e.kind === 'timed' ? mmss(x.secs) + ' steady pace' : e.sets_total + ' sets · ' + (e.completed ? 'done' : 'up next')) + '</div></div></div>' +
-        (e.kind === 'timed' && !e.completed ? '<button class="btn" data-a="timed-start" data-id="' + e.id + '" data-secs="' + x.secs + '" data-name="' + esc(e.name) + '">' + IF(PLAY) + 'Start ' + mmss(x.secs) + '</button>' : (e.kind === 'sets' ? '<div class="mono soft" style="font-size:18px;font-weight:800">' + clock(x.secs) + '</div>' : '')) + '</div>';
+      h += '<div class="exc' + (e.completed ? ' done' : '') + '" data-a="focus" data-id="' + e.id + '" style="cursor:pointer"><div class="row gap12" style="min-width:0"><button class="cbox' + (e.completed ? ' on' : '') + '" data-a="toggle-ex" data-id="' + e.id + '" aria-label="Toggle done">' + (e.completed ? I('check') : '') + '</button><div style="min-width:0"><div class="eyebrow" style="font-size:10px">#' + (i + 1) + (x.cat ? ' · ' + esc(x.cat) : '') + '</div>' +
+        '<div style="font-size:16px;font-weight:800">' + esc(e.name) + '</div><div class="small muted">' + (e.completed ? 'done · ' : '') + exSub(e) + '</div></div></div>' +
+        '<div class="row gap6">' + (e.kind === 'timed' && !e.completed ? '<button class="btn sm" data-a="timed-start" data-id="' + e.id + '" data-secs="' + x.secs + '" data-name="' + esc(e.name) + '">' + IF(PLAY) + 'Start</button>' : '') + exPencil('session', e.id) + '</div></div>';
     }
   });
-  h += '<div class="spacer"></div><button class="btn danger block" data-a="discard-workout" style="min-height:44px;font-size:14px">Discard this workout</button>';
+  h += addButtons('session') + '<div class="spacer"></div><button class="btn danger block" data-a="discard-workout" style="min-height:44px;font-size:14px">Discard this workout</button>';
   setApp(h); ensureTick();
 }
+
+// ---------- custom exercises (add / edit) ----------
+let exCtx = null;
+function openExForm(mode, id) {
+  let ex = null;
+  if (id) ex = (mode === 'plan' ? S.routine : S.exercises).find((x) => x.id === +id);
+  exCtx = { mode, id: ex ? ex.id : null, routineId: ex ? ex.routine_id : null,
+    d: ex ? { name: ex.name, category: ex.category || '', kind: ex.kind, sets: ex.sets_total || 3, reps: ex.reps || '', secs: ex.seconds, note: ex.note || '' }
+      : { name: '', category: '', kind: 'sets', sets: 3, reps: '10-12', secs: 75, note: '' } };
+  renderExForm();
+}
+function readExDraft() {
+  if (!$('#ex-name')) return;
+  const d = exCtx.d;
+  d.name = val('ex-name'); d.category = val('ex-cat'); d.note = val('ex-note');
+  if (d.kind === 'sets') { d.sets = parseInt(val('ex-sets'), 10) || 1; d.reps = val('ex-reps'); }
+  d.secs = (parseInt(val('ex-m'), 10) || 0) * 60 + (parseInt(val('ex-s'), 10) || 0);
+}
+function renderExForm() {
+  const d = exCtx.d, timed = d.kind === 'timed', edit = !!exCtx.id;
+  const chips = timed ? [[60, '1 min'], [300, '5 min'], [600, '10 min'], [900, '15 min'], [1200, '20 min'], [1800, '30 min'], [2700, '45 min'], [3600, '60 min']] : [[30, '0:30'], [45, '0:45'], [60, '1:00'], [75, '1:15'], [90, '1:30'], [120, '2:00'], [180, '3:00']];
+  const title = edit ? 'Edit exercise' : exCtx.mode === 'plan' ? 'Add to ' + esc(S.plan) : 'Add to this workout';
+  sheet('<h2 class="title" style="font-size:22px">' + title + '</h2><p class="sub" style="margin-bottom:14px">Any machine, exercise or timer you like.</p>' +
+    '<div class="field"><label>Name</label><input id="ex-name" placeholder="e.g. Leg Curl Machine, Treadmill, Plank" value="' + esc(d.name) + '"></div>' +
+    '<div class="field"><label>Type</label><div class="seg"><button data-a="ex-kind" data-k="sets" class="' + (timed ? '' : 'on') + '">Sets &amp; reps</button><button data-a="ex-kind" data-k="timed" class="' + (timed ? 'on' : '') + '">Timed</button></div></div>' +
+    (timed ? '' : '<div class="two"><div class="field"><label>Sets</label><input id="ex-sets" class="inputmono" type="number" inputmode="numeric" min="1" max="20" value="' + esc(d.sets) + '"></div><div class="field"><label>Reps (optional)</label><input id="ex-reps" class="inputmono" placeholder="10-12" value="' + esc(d.reps) + '"></div></div>') +
+    '<div class="field"><label>' + (timed ? 'Timer length' : 'Rest between sets') + '</label><div class="row gap8"><input id="ex-m" class="inputmono" type="number" inputmode="numeric" min="0" max="180" value="' + Math.floor(d.secs / 60) + '"><span class="muted small">min</span><input id="ex-s" class="inputmono" type="number" inputmode="numeric" min="0" max="59" value="' + (d.secs % 60) + '"><span class="muted small">sec</span></div>' +
+    '<div class="chips" style="margin:10px 0 0;flex-wrap:wrap;overflow:visible">' + chips.map((c) => '<button data-a="ex-chip" data-t="' + c[0] + '" style="min-height:36px;padding:0 14px;font-size:13px" class="' + (d.secs === c[0] ? 'on' : '') + '">' + c[1] + '</button>').join('') + '</div>' +
+    '<div class="small muted" style="margin-top:6px;font-size:12px">' + (timed ? 'Counts down when you tap Start. Buzzes your phone when it\'s done.' : 'Your rest countdown starts when you finish each set.') + '</div></div>' +
+    '<div class="field"><label>Category (optional)</label><input id="ex-cat" placeholder="e.g. Legs, Cardio, Core" value="' + esc(d.category) + '"></div>' +
+    '<div class="field"><label>Note (optional)</label><input id="ex-note" placeholder="A reminder to yourself" value="' + esc(d.note) + '"></div>' +
+    (exCtx.mode === 'session' && (!edit || exCtx.routineId) ? '<label class="check" style="margin-bottom:14px"><input type="checkbox" id="ex-save"> ' + (edit ? 'Also update it in my saved workout' : 'Also save it to my ' + esc(S.plan) + ' workout') + '</label>' : '') +
+    '<button class="btn block" data-a="ex-save">' + (edit ? 'Save changes' : 'Add exercise') + '</button>' +
+    (edit ? '<div class="spacer" style="height:8px"></div><button class="btn danger block" data-a="ex-delete">' + (exCtx.mode === 'plan' ? 'Delete exercise' : 'Remove from this workout') + '</button>' : ''));
+}
+function refreshAfterEx() { if (S.pageFn) S.pageFn(); else go('today'); }
+function quickTimerSheet() {
+  sheet('<h2 class="title" style="font-size:22px">Quick countdown</h2><p class="sub" style="margin-bottom:14px">A timer for anything: a plank, a stretch, an extra rest.</p>' +
+    '<div class="chips" style="flex-wrap:wrap;overflow:visible">' + [[30, '0:30'], [60, '1:00'], [90, '1:30'], [120, '2:00'], [180, '3:00'], [300, '5:00'], [600, '10:00'], [900, '15:00']].map((c) => '<button data-a="qt-go" data-s="' + c[0] + '">' + c[1] + '</button>').join('') + '</div>' +
+    '<div class="flabel">Or set your own</div><div class="row gap8" style="margin-bottom:14px"><input id="qt-m" class="inputmono" type="number" inputmode="numeric" placeholder="0" value="1"><span class="muted small">min</span><input id="qt-s" class="inputmono" type="number" inputmode="numeric" placeholder="0" value="0"><span class="muted small">sec</span></div>' +
+    '<button class="btn block" data-a="qt-custom">Start timer</button>');
+}
+function newPlanSheet(copy) {
+  sheet('<h2 class="title" style="font-size:22px">New workout</h2><p class="sub" style="margin-bottom:14px">Like Leg Day, Cardio, or Quick 20.</p><div class="field"><label>Name</label><input id="pn-name" placeholder="e.g. Leg Day"></div>' +
+    '<label class="check" style="margin-bottom:14px"><input type="checkbox" id="pn-copy"' + (copy ? ' checked' : '') + '> Start with a copy of "' + esc(S.plan) + '"</label><button class="btn block" data-a="plan-create">Create workout</button>');
+}
+
 function motivation(p) {
   const w = p.week.workouts, goal = p.workouts_per_week || 3;
   if (p.streak >= 3) return p.streak + ' days in a row. Look at you go!';
@@ -525,7 +582,7 @@ async function pageSettings() {
     '<div class="row between" style="margin-bottom:12px"><b>Start Apple Timer with each rest</b><label class="sw"><input type="checkbox" data-c="apple"' + (p.apple_timer ? ' checked' : '') + '><i></i></label></div>' +
     '<button class="btn cyan block" data-a="shortcut-help">How to add the one-time Shortcut</button></div>' +
     '<div class="card"><div class="row between"><div><b>Units</b><div class="small muted" style="font-size:12px">Pounds and feet / inches</div></div><span class="badge lime">lb</span></div></div>' +
-    '<div class="card tight" data-a="routine" style="cursor:pointer"><div class="row between"><div><b>My routine</b><div class="small muted" style="font-size:12px">Add, remove or reorder exercises</div></div><span class="muted">' + I('next') + '</span></div></div>' +
+    '<div class="card tight" data-a="routine" style="cursor:pointer"><div class="row between"><div><b>My workouts</b><div class="small muted" style="font-size:12px">Create workouts, add custom exercises and timers</div></div><span class="muted">' + I('next') + '</span></div></div>' +
     (S.me.role === 'admin' ? '<div class="card warn tight" data-a="admin" style="cursor:pointer"><div class="row between"><div><b>Manage users</b><div class="small muted" style="font-size:12px">Admin only · add users, reset passwords, backups</div></div><span class="amber">' + I('next') + '</span></div></div>' : '') +
     '<div class="row gap8"><button class="btn alt" style="flex:1" data-a="pw-sheet">Change password</button><button class="btn alt" style="flex:1;color:var(--rose)" data-a="logout">Sign out</button></div>' +
     '<p class="small muted" style="text-align:center;margin-top:16px;font-size:12px">GymPulse is for general fitness and is not medical advice. Check with your doctor before starting a new exercise or eating plan.</p>');
@@ -541,14 +598,15 @@ function pageGuide() {
     '<button class="btn block" data-a="close-page" style="min-height:56px">Got it, let\'s go</button>');
 }
 async function pageRoutine() {
-  const rt = (await GET('/api/routine')).routine; S.routine = rt;
-  setPage('<div class="head back">' + backBtn() + '<div><h1 class="title" style="font-size:24px">My routine</h1><p class="sub">The exercises that show up when you start a workout</p></div></div>' +
-    '<div class="card">' + (rt.length ? rt.map((r, i) => '<div class="entry" style="' + (i === 0 ? 'border-top:0' : '') + '"><div class="grow"><b>' + esc(r.name) + '</b><div class="small muted">' + (r.kind === 'timed' ? 'Timed · ' + mmss(r.seconds) : r.sets_total + ' sets · rest ' + mmss(r.seconds)) + '</div></div>' +
-      '<button class="sq" style="width:38px;height:38px" data-a="rt-move" data-id="' + r.id + '" data-dir="up"' + (i === 0 ? ' disabled' : '') + '>↑</button><button class="sq" style="width:38px;height:38px" data-a="rt-move" data-id="' + r.id + '" data-dir="down"' + (i === rt.length - 1 ? ' disabled' : '') + '>↓</button><button class="sq" style="width:38px;height:38px;color:var(--rose)" data-a="rt-del" data-id="' + r.id + '">✕</button></div>').join('') : '<p class="muted">No exercises yet.</p>') + '</div>' +
-    '<div class="card"><div class="eyebrow" style="margin-bottom:10px">Add an exercise</div><div class="field"><input id="rt-name" placeholder="Name, like Leg Curl Machine"></div>' +
-    '<div class="two"><div class="field"><label>Type</label><select id="rt-kind"><option value="sets">Sets and reps</option><option value="timed">Timed (treadmill)</option></select></div><div class="field"><label>Sets</label><input id="rt-sets" class="inputmono" type="number" value="3"></div></div>' +
-    '<div class="field"><label>Rest between sets, or length of timed exercise (seconds)</label><input id="rt-secs" class="inputmono" type="number" value="75"></div><div class="field"><input id="rt-note" placeholder="A quick note (optional)"></div><button class="btn block" data-a="rt-add">Add</button></div>' +
-    '<button class="btn alt block" data-a="rt-template">Reset to the beginner plan</button>');
+  const d = await GET('/api/routine'); S.routine = d.routine; S.plans = d.plans;
+  if (S.plans.indexOf(S.plan) < 0) setPlan(S.plans[0]);
+  const rt = S.routine.filter((r) => r.plan === S.plan);
+  setPage('<div class="head back">' + backBtn() + '<div><h1 class="title" style="font-size:24px">My workouts</h1><p class="sub">Build as many as you like and pick one on the Today screen</p></div></div>' + planChips() +
+    '<div class="card">' + (rt.length ? rt.map((r, i) => '<div class="entry" style="' + (i === 0 ? 'border-top:0;padding-top:0' : '') + '"><div class="grow"><b>' + esc(r.name) + '</b><div class="small muted">' + exSub(r) + (r.category ? ' · ' + esc(r.category) : '') + '</div></div>' +
+      '<button class="sq" style="width:38px;height:38px" data-a="rt-move" data-id="' + r.id + '" data-dir="up"' + (i === 0 ? ' disabled' : '') + ' aria-label="Move up">↑</button><button class="sq" style="width:38px;height:38px" data-a="rt-move" data-id="' + r.id + '" data-dir="down"' + (i === rt.length - 1 ? ' disabled' : '') + ' aria-label="Move down">↓</button>' + exPencil('plan', r.id).replace('width:40px;height:40px', 'width:38px;height:38px') + '</div>').join('') : '<p class="muted">No exercises yet.</p>') + '</div>' +
+    addButtons('plan') + '<div class="spacer"></div>' +
+    '<div class="card tight"><div class="eyebrow" style="font-size:10px;margin-bottom:10px">This workout: ' + esc(S.plan) + '</div><div class="row gap8 wrap"><button class="btn alt sm" data-a="plan-rename">Rename</button><button class="btn alt sm" data-a="plan-copy">Copy</button><button class="btn danger sm" data-a="plan-delete">Delete</button></div></div>' +
+    (S.plan === 'Beginner routine' ? '<button class="btn alt block" data-a="rt-template">Reset Beginner routine to the original</button>' : ''));
 }
 async function pageAdmin() {
   const us = (await GET('/api/admin/users')).users;
@@ -609,8 +667,8 @@ const actions = {
   async setup() { try { await POST('/api/setup', { username: val('u'), password: val('p') }); boot(); } catch (e) { $('#e').textContent = e.userMessage || 'Could not create the account.'; } },
   async login() { try { await POST('/api/login', { username: val('u'), password: val('p'), remember: $('#keep') ? $('#keep').checked : true }); boot(); } catch (e) { $('#e').textContent = e.userMessage || 'Could not sign in.'; } },
   tab(el) { go(el.dataset.t); },
-  'close-page'() { closePage(); },
-  async 'start-workout'() { S.focus = null; await POST('/api/session/start', { date: todayStr() }); go('today'); },
+  'close-page'() { closePage(); go(S.tab); },
+  async 'start-workout'() { S.focus = null; await POST('/api/session/start', { date: todayStr(), plan: S.plan }); go('today'); },
   focus(el) { S.focus = +el.dataset.id; go('today'); },
   async 'toggle-ex'(el) {
     const e = S.exercises.find((x) => x.id === +el.dataset.id); if (!e) return;
@@ -684,10 +742,34 @@ const actions = {
   async 'friend-remove'(el) { if (confirm('Remove this friend?')) { await DEL('/api/friends/' + el.dataset.id); go('friends'); } },
   async cheer(el) { try { await POST('/api/feed/' + el.dataset.id + '/cheer'); go('friends'); } catch (e) { fail(e); } },
   'hist-month'(el) { const [Y, M] = S.histMonth.split('-').map(Number); const d = new Date(Y, M - 1 + +el.dataset.d, 1); S.histMonth = d.getFullYear() + '-' + pad(d.getMonth() + 1); go('history'); },
-  async 'rt-add'() { try { await POST('/api/routine', { name: val('rt-name'), kind: val('rt-kind'), sets_total: val('rt-sets'), seconds: val('rt-secs'), note: val('rt-note') }); pageRoutine(); } catch (e) { fail(e); } },
-  async 'rt-del'(el) { await DEL('/api/routine/' + el.dataset.id); pageRoutine(); },
   async 'rt-move'(el) { await POST('/api/routine/' + el.dataset.id + '/move', { direction: el.dataset.dir }); pageRoutine(); },
-  async 'rt-template'() { if (confirm('Replace your routine with the beginner plan?')) { await POST('/api/routine/template'); pageRoutine(); } },
+  async 'rt-template'() { if (confirm('Replace the Beginner routine with the original 8 exercises?')) { await POST('/api/routine/template'); pageRoutine(); } },
+  'ex-add'(el) { openExForm(el.dataset.m, null); },
+  'ex-edit'(el) { openExForm(el.dataset.m, el.dataset.id); },
+  'ex-kind'(el) { readExDraft(); const d = exCtx.d; if (d.kind !== el.dataset.k) { d.kind = el.dataset.k; if (d.kind === 'timed' && d.secs <= 180) d.secs = 600; if (d.kind === 'sets' && d.secs > 300) d.secs = 75; } renderExForm(); },
+  'ex-chip'(el) { readExDraft(); exCtx.d.secs = +el.dataset.t; renderExForm(); },
+  async 'ex-save'() {
+    readExDraft(); const d = exCtx.d, timed = d.kind === 'timed';
+    const body = { name: d.name, category: d.category, kind: d.kind, sets_total: timed ? 0 : d.sets, reps: timed ? '' : d.reps, seconds: d.secs, note: d.note };
+    try {
+      if (exCtx.mode === 'plan') { if (exCtx.id) await PUT('/api/routine/' + exCtx.id, body); else await POST('/api/routine', Object.assign({ plan: S.plan }, body)); }
+      else { body.save_to_plan = !!($('#ex-save') && $('#ex-save').checked); if (exCtx.id) await PUT('/api/session/' + S.session.id + '/exercise/' + exCtx.id, body); else await POST('/api/session/' + S.session.id + '/exercises', body); }
+      closeSheet(); toast(exCtx.id ? 'Saved.' : 'Added.'); refreshAfterEx();
+    } catch (e) { fail(e); }
+  },
+  async 'ex-delete'() {
+    if (!confirm(exCtx.mode === 'plan' ? 'Delete this exercise from the workout?' : 'Remove this exercise from today\'s workout?')) return;
+    try { if (exCtx.mode === 'plan') await DEL('/api/routine/' + exCtx.id); else await DEL('/api/session/' + S.session.id + '/exercise/' + exCtx.id); closeSheet(); refreshAfterEx(); } catch (e) { fail(e); }
+  },
+  'quick-timer'() { quickTimerSheet(); },
+  'qt-go'(el) { closeSheet(); startTimer(+el.dataset.s, 'Quick timer', { kind: 'quick' }); refreshAfterEx(); },
+  'qt-custom'() { const secs = (parseInt(val('qt-m'), 10) || 0) * 60 + (parseInt(val('qt-s'), 10) || 0); if (secs < 5) return toast('Pick at least 5 seconds.'); closeSheet(); startTimer(secs, 'Quick timer', { kind: 'quick' }); refreshAfterEx(); },
+  'plan-pick'(el) { setPlan(el.dataset.p); refreshAfterEx(); },
+  'plan-new'() { newPlanSheet(false); },
+  'plan-copy'() { newPlanSheet(true); },
+  async 'plan-create'() { try { const name = val('pn-name').trim(); await POST('/api/plans', { name, copy_from: $('#pn-copy').checked ? S.plan : '' }); setPlan(name); closeSheet(); toast('Workout created. Add your exercises.'); refreshAfterEx(); } catch (e) { fail(e); } },
+  async 'plan-rename'() { const n = prompt('New name for this workout:', S.plan); if (n && n.trim() && n.trim() !== S.plan) { try { await PUT('/api/plans', { old: S.plan, new: n.trim() }); setPlan(n.trim()); refreshAfterEx(); } catch (e) { fail(e); } } },
+  async 'plan-delete'() { if (!confirm('Delete the workout "' + S.plan + '" and all its exercises?')) return; try { const r = await DEL('/api/plans?name=' + encodeURIComponent(S.plan)); setPlan(r.plans[0]); refreshAfterEx(); } catch (e) { fail(e); } },
   'nu-role'(el) { nuRole = el.dataset.r; document.querySelectorAll('#nu-role button').forEach((b) => b.classList.toggle('on', b === el)); },
   async 'adm-add'() { try { await POST('/api/admin/users', { username: val('nu-name'), password: val('nu-pw'), role: nuRole }); toast('User created.'); pageAdmin(); } catch (e) { fail(e); } },
   'adm-menu'(el) {

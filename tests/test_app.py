@@ -281,3 +281,58 @@ def test_usda_importer(tmp_path):
     conn = sqlite3.connect(str(tmp_path / "gympulse.db"))
     rows = conn.execute("SELECT name, calories FROM foods WHERE source='usda'").fetchall()
     assert rows == [("Lentils, cooked", 116.0)]
+
+
+def test_custom_exercises_and_plans(app):
+    c = client(app)
+    setup_admin(c)
+    r = c.get("/api/routine").get_json()
+    assert r["plans"] == ["Beginner routine"] and len(r["routine"]) == 8
+    # new named workout, with a custom timed exercise and a custom sets exercise
+    assert c.post("/api/plans", json={"name": "Leg Day"}, headers=H).status_code == 200
+    assert c.post("/api/plans", json={"name": "Leg Day"}, headers=H).status_code == 400
+    c.post("/api/routine", json={"plan": "Leg Day", "name": "Bike", "kind": "timed", "seconds": 1500}, headers=H)
+    r = c.post("/api/routine", json={"plan": "Leg Day", "name": "Leg Curl", "kind": "sets", "sets_total": 4,
+                                     "reps": "12", "seconds": 45, "category": "Legs"}, headers=H).get_json()
+    leg = [x for x in r["routine"] if x["plan"] == "Leg Day"]
+    assert [x["name"] for x in leg] == ["Bike", "Leg Curl"]
+    assert leg[1]["reps"] == "12" and leg[1]["seconds"] == 45
+    assert c.post("/api/routine", json={"plan": "Leg Day", "name": "Bad", "seconds": 1}, headers=H).status_code == 400
+    # moving stays inside the plan
+    r = c.post("/api/routine/%d/move" % leg[1]["id"], json={"direction": "up"}, headers=H).get_json()
+    assert [x["name"] for x in r["routine"] if x["plan"] == "Leg Day"] == ["Leg Curl", "Bike"]
+    # edit
+    r = c.put("/api/routine/%d" % leg[0]["id"], json={"seconds": 1800, "name": "Spin Bike"}, headers=H).get_json()
+    assert [x for x in r["routine"] if x["id"] == leg[0]["id"]][0]["seconds"] == 1800
+    # start a session from that plan only
+    s = c.post("/api/session/start", json={"plan": "Leg Day", "date": "2026-03-04"}, headers=H).get_json()
+    assert [e["name"] for e in s["exercises"]] == ["Leg Curl", "Spin Bike"]
+    assert s["exercises"][0]["reps"] == "12" and s["exercises"][0]["seconds"] == 45
+    sid = s["session"]["id"]
+    # add a one-off exercise mid-workout, then one saved to the plan
+    s = c.post("/api/session/%d/exercises" % sid, json={"name": "Jump Rope", "kind": "timed", "seconds": 300}, headers=H).get_json()
+    assert s["exercises"][-1]["name"] == "Jump Rope" and s["exercises"][-1]["routine_id"] is None
+    s = c.post("/api/session/%d/exercises" % sid, json={"name": "Plank", "kind": "timed", "seconds": 60, "save_to_plan": True}, headers=H).get_json()
+    assert s["exercises"][-1]["routine_id"] is not None
+    assert any(x["name"] == "Plank" for x in c.get("/api/routine").get_json()["routine"])
+    # edit and remove inside the session
+    rope = [e for e in s["exercises"] if e["name"] == "Jump Rope"][0]
+    s = c.put("/api/session/%d/exercise/%d" % (sid, rope["id"]), json={"seconds": 120}, headers=H).get_json()
+    assert [e for e in s["exercises"] if e["id"] == rope["id"]][0]["seconds"] == 120
+    s = c.delete("/api/session/%d/exercise/%d" % (sid, rope["id"]), headers=H).get_json()
+    assert all(e["name"] != "Jump Rope" for e in s["exercises"])
+    # sets can't be edited on someone else's session
+    other = add_user(c, "sam")
+    assert other.post("/api/session/%d/exercises" % sid, json={"name": "X"}, headers=H).status_code == 404
+    # rename and delete plans; the last plan can't be deleted
+    r = c.put("/api/plans", json={"old": "Leg Day", "new": "Legs"}, headers=H).get_json()
+    assert "Legs" in r["plans"] and all(x["plan"] != "Leg Day" for x in r["routine"])
+    r = c.delete("/api/plans?name=Legs", headers=H).get_json()
+    assert r["plans"] == ["Beginner routine"]
+    assert c.delete("/api/plans?name=Beginner%20routine", headers=H).status_code == 400
+    # resetting the beginner plan leaves other workouts alone
+    c.post("/api/plans", json={"name": "Keep me", "copy_from": "Beginner routine"}, headers=H)
+    c.post("/api/routine/template", headers=H)
+    r = c.get("/api/routine").get_json()
+    assert len([x for x in r["routine"] if x["plan"] == "Keep me"]) == 8
+    assert len([x for x in r["routine"] if x["plan"] == "Beginner routine"]) == 8
