@@ -1,0 +1,13 @@
+services:
+  gympulse:
+    image: ghcr.io/thepixlpirate/gympulse:latest
+    container_name: gympulse
+    restart: unless-stopped
+    ports:
+      - "8765:8080"
+    volumes:
+      - /mnt/user/appdata/gympulse:/config
+    environment:
+      - TZ=America/Indiana/Indianapolis
+      # Set to 1 once you reach the app through https (Cloudflare tunnel):
+      - GYMPULSE_SECURE_COOKIES=1
