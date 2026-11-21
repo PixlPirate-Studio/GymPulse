@@ -63,10 +63,12 @@ Push changes to GitHub, wait for the green check, then in Unraid click the conta
 
 ## Not included yet
 
-Apple Health (a web app cannot read it; it needs a native app), progress photos, badges, personal records, per-set weights and reps, camera barcode scanning, kilograms.
+Apple Health (a web app cannot read it; it needs a native app), progress photos, badges, personal records, per-set weights and reps, camera barcode scanning (type the number instead), a kg option, and "Easy" difficulty tags on recipes.
 
 ## Backups
 
 Everything lives in `/config`: `gympulse.db`, `vapid_private.pem` (alert key), `secret_key` (keeps people signed in) and `backups/`.
+
+Fonts (Inter and JetBrains Mono) are bundled in `static/fonts` under the SIL Open Font License, so the app never calls Google Fonts.
 
 Built from scratch for personal use. GymPulse does not contain code from other fitness apps.

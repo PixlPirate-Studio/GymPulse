@@ -449,7 +449,7 @@ def create_app():
         attempts.pop(key, None)
         session.clear()
         session["uid"] = u["id"]
-        session.permanent = True
+        session.permanent = bool(b.get("remember", True))
         return jsonify({"ok": True})
 
     @app.post("/api/logout")
@@ -707,8 +707,10 @@ def create_app():
             did = [e for e in exs if e["completed"] or e["sets_done"] > 0]
             strength = 1 if any(e["kind"] == "sets" and e["sets_done"] > 0 for e in exs) else 0
             ended = now()
+            paused = int(num(body().get("paused_sec"), 0, 43200, 0))
+            total = max(0, ended - s["started_at"])
             db().execute("UPDATE sessions SET ended_at=?, duration_sec=?, strength=? WHERE id=?",
-                         (ended, ended - s["started_at"], strength, sid))
+                         (ended, max(0, total - min(paused, total)), strength, sid))
             if did:
                 done_count = sum(1 for e in exs if e["completed"])
                 db().execute("INSERT INTO events(user_id,type,text,ref_id,created_at) VALUES(?,?,?,?,?)",
@@ -795,7 +797,7 @@ def create_app():
                       "(SELECT COUNT(*) FROM session_exercises e WHERE e.session_id=s.id) AS total, "
                       "(SELECT COUNT(*) FROM session_exercises e WHERE e.session_id=s.id AND e.completed=1) AS done, "
                       "(SELECT COALESCE(SUM(e.sets_done),0) FROM session_exercises e WHERE e.session_id=s.id) AS sets "
-                      "FROM sessions s WHERE s.user_id=? AND s.ended_at IS NOT NULL ORDER BY s.date DESC, s.id DESC LIMIT 8",
+                      "FROM sessions s WHERE s.user_id=? AND (s.ended_at IS NULL OR EXISTS(SELECT 1 FROM session_exercises e WHERE e.session_id=s.id AND (e.completed=1 OR e.sets_done>0))) ORDER BY s.date DESC, s.id DESC LIMIT 8",
                       (g.user["id"],))
         return jsonify({"month": month, "days": days, "month_sessions": len(days), "recent": recent})
 
