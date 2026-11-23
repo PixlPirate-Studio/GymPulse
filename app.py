@@ -9,6 +9,7 @@ map to /mnt/user/appdata/gympulse on Unraid).
 
 import base64
 import datetime as dt
+import hashlib
 import json
 import math
 import os
@@ -28,6 +29,15 @@ from flask import (Flask, g, jsonify, request, send_file, send_from_directory,
                    session)
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
+from types import SimpleNamespace
+
+import api_tokens
+import workouts_plus
+import social_plus
+import food_plus
+import guide
+
+MODULES = [api_tokens, workouts_plus, social_plus, food_plus, guide]
 
 APP_VERSION = "1.0.0"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -102,6 +112,7 @@ CREATE TABLE IF NOT EXISTS users(
   pw_hash TEXT NOT NULL,
   role TEXT NOT NULL DEFAULT 'user',
   disabled INTEGER NOT NULL DEFAULT 0,
+  display_name TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS profiles(
@@ -236,7 +247,17 @@ def create_app():
 
     app = Flask(__name__, static_folder=None)
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
-    app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024
+    inner_wsgi = app.wsgi_app
+
+    def v1_alias(environ, start_response):
+        # /api/v1/... is the stable name for /api/... so apps can pin a version.
+        path = environ.get("PATH_INFO", "")
+        if path.startswith("/api/v1/"):
+            environ["PATH_INFO"] = "/api/" + path[8:]
+        return inner_wsgi(environ, start_response)
+
+    app.wsgi_app = v1_alias
+    app.config["MAX_CONTENT_LENGTH"] = 12 * 1024 * 1024
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
     app.config["SESSION_COOKIE_SECURE"] = os.environ.get("GYMPULSE_SECURE_COOKIES", "0") == "1"
@@ -259,18 +280,26 @@ def create_app():
         conn.execute("PRAGMA journal_mode=WAL")
         return conn
 
-    with connect() as boot:
-        boot.executescript(SCHEMA)
-        for table, col, ddl in (("routine", "reps", "TEXT DEFAULT ''"),
-                                ("routine", "plan", "TEXT NOT NULL DEFAULT 'Beginner routine'"),
-                                ("sessions", "plan", "TEXT DEFAULT ''"),
-                                ("session_exercises", "category", "TEXT DEFAULT ''"),
-                                ("session_exercises", "note", "TEXT DEFAULT ''"),
-                                ("session_exercises", "reps", "TEXT DEFAULT ''"),
-                                ("session_exercises", "seconds", "INTEGER NOT NULL DEFAULT 75")):
+    def add_missing_columns(boot, migrations):
+        for table, col, ddl in migrations:
             have = [r[1] for r in boot.execute("PRAGMA table_info(%s)" % table)]
             if col not in have:
                 boot.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, col, ddl))
+
+    with connect() as boot:
+        boot.executescript(SCHEMA)
+        add_missing_columns(boot, (("users", "display_name", "TEXT NOT NULL DEFAULT ''"),
+                                   ("routine", "reps", "TEXT DEFAULT ''"),
+                                   ("routine", "plan", "TEXT NOT NULL DEFAULT 'Beginner routine'"),
+                                   ("sessions", "plan", "TEXT DEFAULT ''"),
+                                   ("session_exercises", "category", "TEXT DEFAULT ''"),
+                                   ("session_exercises", "note", "TEXT DEFAULT ''"),
+                                   ("session_exercises", "reps", "TEXT DEFAULT ''"),
+                                   ("session_exercises", "seconds", "INTEGER NOT NULL DEFAULT 75")))
+        for mod in MODULES:
+            boot.executescript(mod.SCHEMA)
+            add_missing_columns(boot, getattr(mod, "MIGRATIONS", ()))
+            boot.executescript(getattr(mod, "POST_SCHEMA", ""))
         boot.execute("INSERT OR IGNORE INTO plans(user_id,name) SELECT DISTINCT user_id, plan FROM routine")
         if boot.execute("SELECT COUNT(*) FROM foods WHERE owner_id IS NULL").fetchone()[0] == 0:
             boot.executemany(
@@ -320,16 +349,57 @@ def create_app():
         print("Push alerts unavailable:", exc)
 
     # ---- request guards ----
+    def issue_token(uid, name="", scope="full"):
+        """Create a revocable API token. Only its hash is stored."""
+        raw = "gp_" + secrets.token_urlsafe(32)
+        cur = db().execute(
+            "INSERT INTO api_tokens(user_id,token_hash,name,scope,created_at) VALUES(?,?,?,?,?)",
+            (uid, hashlib.sha256(raw.encode()).hexdigest(), text(name, 60) or "App", scope, now()))
+        db().commit()
+        return raw, cur.lastrowid
+
+    def bearer_token():
+        auth = request.headers.get("Authorization", "")
+        if auth[:7].lower() == "bearer ":
+            return auth[7:].strip()
+        return None
+
     @app.before_request
     def csrf_guard():
         if request.path.startswith("/api/") and request.method not in ("GET", "HEAD", "OPTIONS"):
+            # Apps using an API token send an Authorization header, which a
+            # web page on another site cannot add, so no CSRF header is needed.
+            if bearer_token():
+                return None
+            # These two never set a browser cookie when an app uses them.
+            if request.path == "/api/auth/token":
+                return None
+            if request.path.startswith("/api/invite/") and (body().get("device_name") if request.is_json else False):
+                return None
             if request.headers.get("X-GymPulse") != "1":
                 return err("Blocked request.", 403)
 
-    def login_required(admin=False):
+    def login_required(admin=False, scopes=("full",)):
         def deco(fn):
             @wraps(fn)
             def wrapper(*a, **k):
+                tok = bearer_token()
+                if tok:
+                    u = None
+                    row = one("SELECT * FROM api_tokens WHERE token_hash=? AND revoked=0",
+                              (hashlib.sha256(tok.encode()).hexdigest(),))
+                    if row and row["scope"] in scopes:
+                        u = one("SELECT * FROM users WHERE id=? AND disabled=0", (row["user_id"],))
+                    if not u:
+                        return err("Please sign in.", 401)
+                    if now() - (row["last_used"] or 0) > 300:
+                        db().execute("UPDATE api_tokens SET last_used=? WHERE id=?", (now(), row["id"]))
+                        db().commit()
+                    g.user = u
+                    g.token = row
+                    if admin and u["role"] != "admin":
+                        return err("Admins only.", 403)
+                    return fn(*a, **k)
                 uid = session.get("uid")
                 if not uid:
                     return err("Please sign in.", 401)
@@ -338,9 +408,11 @@ def create_app():
                     session.clear()
                     return err("Please sign in.", 401)
                 g.user = u
+                g.token = None
                 if admin and u["role"] != "admin":
                     return err("Admins only.", 403)
                 return fn(*a, **k)
+            wrapper.gp_auth = "admin" if admin else ("user" if "health" not in scopes else "user or health token")
             return wrapper
         return deco
 
@@ -370,7 +442,8 @@ def create_app():
     USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{3,24}$")
 
     def public_user(u):
-        return {"id": u["id"], "username": u["username"], "role": u["role"]}
+        return {"id": u["id"], "username": u["username"], "role": u["role"],
+                "display_name": u["display_name"], "name": u["display_name"] or u["username"]}
 
     def make_user(username, password, role):
         if not USERNAME_RE.match(username or ""):
@@ -443,6 +516,11 @@ def create_app():
     def api_me():
         count = one("SELECT COUNT(*) AS c FROM users")["c"]
         uid = session.get("uid")
+        tok = bearer_token()
+        if tok:
+            row = one("SELECT user_id FROM api_tokens WHERE token_hash=? AND revoked=0",
+                      (hashlib.sha256(tok.encode()).hexdigest(),))
+            uid = row["user_id"] if row else None
         u = one("SELECT * FROM users WHERE id=? AND disabled=0", (uid,)) if uid else None
         return jsonify({"user": public_user(u) if u else None,
                         "needs_setup": count == 0, "version": APP_VERSION})
@@ -458,7 +536,10 @@ def create_app():
         session.clear()
         session["uid"] = uid
         session.permanent = True
-        return jsonify({"ok": True})
+        out = {"ok": True}
+        if b.get("device_name"):
+            out["token"] = issue_token(uid, b.get("device_name"))[0]
+        return jsonify(out)
 
     @app.post("/api/login")
     def api_login():
@@ -534,6 +615,26 @@ def create_app():
             out["lbs_to_goal"] = round(abs(w - goal), 1)
             out["weeks_to_goal"] = int(math.ceil(abs(w - goal) / 1.0)) if abs(w - goal) >= 1 else 0
         return out
+
+    @app.put("/api/account")
+    @login_required()
+    def api_account():
+        """Change the name friends see. The login username never changes."""
+        raw = body().get("display_name")
+        name = " ".join(raw.split()) if isinstance(raw, str) else ""
+        if len(name) > 30:
+            return err("Display names can be up to 30 characters.")
+        if any(ord(ch) < 32 for ch in name):
+            return err("That name has characters we can't use.")
+        if name:
+            clash = one("SELECT id FROM users WHERE id<>? AND (username=? COLLATE NOCASE OR display_name=? COLLATE NOCASE)",
+                        (g.user["id"], name, name))
+            if clash:
+                return err("Someone else already uses that name. Try another.")
+        db().execute("UPDATE users SET display_name=? WHERE id=?", (name, g.user["id"]))
+        db().commit()
+        u = one("SELECT * FROM users WHERE id=?", (g.user["id"],))
+        return jsonify({"user": public_user(u)})
 
     @app.get("/api/profile")
     @login_required()
@@ -744,8 +845,13 @@ def create_app():
     # =====================================================================
     # Workout sessions
     # =====================================================================
+    payload_extras = []   # modules add per-exercise details (set logs, last time...)
+    after_finish = []     # modules react when a workout ends (badges, challenges...)
+
     def session_payload(s):
         exs = rows("SELECT * FROM session_exercises WHERE session_id=? ORDER BY id", (s["id"],))
+        for f in payload_extras:
+            f(s, exs)
         return {"session": s, "exercises": exs}
 
     def own_active_session(sid):
@@ -864,28 +970,38 @@ def create_app():
         db().commit()
         return jsonify(session_payload(s))
 
+    def finish_session(s, paused=0, ended=None):
+        """Close a workout once: totals, feed post, then module hooks."""
+        if s["ended_at"] is not None:
+            return False
+        sid = s["id"]
+        exs = rows("SELECT * FROM session_exercises WHERE session_id=?", (sid,))
+        did = [e for e in exs if e["completed"] or e["sets_done"] > 0]
+        strength = 1 if any(e["kind"] == "sets" and e["sets_done"] > 0 for e in exs) else 0
+        ended = ended or now()
+        total = max(0, ended - s["started_at"])
+        db().execute("UPDATE sessions SET ended_at=?, duration_sec=?, strength=? WHERE id=?",
+                     (ended, max(0, total - min(paused, total)), strength, sid))
+        if did:
+            done_count = sum(1 for e in exs if e["completed"])
+            db().execute("INSERT INTO events(user_id,type,text,ref_id,created_at) VALUES(?,?,?,?,?)",
+                         (s["user_id"], "workout",
+                          "finished a workout (%d of %d exercises)" % (done_count, len(exs)), sid, ended))
+        db().commit()
+        for f in after_finish:
+            f(one("SELECT * FROM sessions WHERE id=?", (sid,)), bool(did))
+        return True
+
     @app.post("/api/session/<int:sid>/finish")
     @login_required()
     def api_session_finish(sid):
         s = one("SELECT * FROM sessions WHERE id=? AND user_id=?", (sid, g.user["id"]))
         if not s:
             return err("Not found.", 404)
-        if s["ended_at"] is None:
-            exs = rows("SELECT * FROM session_exercises WHERE session_id=?", (sid,))
-            did = [e for e in exs if e["completed"] or e["sets_done"] > 0]
-            strength = 1 if any(e["kind"] == "sets" and e["sets_done"] > 0 for e in exs) else 0
-            ended = now()
-            paused = int(num(body().get("paused_sec"), 0, 43200, 0))
-            total = max(0, ended - s["started_at"])
-            db().execute("UPDATE sessions SET ended_at=?, duration_sec=?, strength=? WHERE id=?",
-                         (ended, max(0, total - min(paused, total)), strength, sid))
-            if did:
-                done_count = sum(1 for e in exs if e["completed"])
-                db().execute("INSERT INTO events(user_id,type,text,ref_id,created_at) VALUES(?,?,?,?,?)",
-                             (g.user["id"], "workout",
-                              "finished a workout (%d of %d exercises)" % (done_count, len(exs)), sid, ended))
-            db().commit()
-        return jsonify({"ok": True})
+        out = {"ok": True}
+        if finish_session(s, int(num(body().get("paused_sec"), 0, 43200, 0))):
+            out["extras"] = g.get("finish_extras", {})
+        return jsonify(out)
 
     @app.delete("/api/session/<int:sid>")
     @login_required()
@@ -1115,17 +1231,19 @@ def create_app():
             "SELECT CASE WHEN requester_id=? THEN addressee_id ELSE requester_id END AS other "
             "FROM friendships WHERE status='accepted' AND (requester_id=? OR addressee_id=?)", (uid, uid, uid))}
 
+    feed_extras = []      # modules add reactions etc. to feed items
+
     @app.get("/api/friends")
     @login_required()
     def api_friends():
         uid = g.user["id"]
         friends = rows(
-            "SELECT u.id, u.username FROM users u WHERE u.disabled=0 AND u.id IN ("
+            "SELECT u.id, COALESCE(NULLIF(u.display_name,''), u.username) AS username FROM users u WHERE u.disabled=0 AND u.id IN ("
             "SELECT CASE WHEN requester_id=? THEN addressee_id ELSE requester_id END FROM friendships "
-            "WHERE status='accepted' AND (requester_id=? OR addressee_id=?)) ORDER BY u.username", (uid, uid, uid))
-        incoming = rows("SELECT f.id, u.username FROM friendships f JOIN users u ON u.id=f.requester_id "
+            "WHERE status='accepted' AND (requester_id=? OR addressee_id=?)) ORDER BY 2 COLLATE NOCASE", (uid, uid, uid))
+        incoming = rows("SELECT f.id, COALESCE(NULLIF(u.display_name,''), u.username) AS username FROM friendships f JOIN users u ON u.id=f.requester_id "
                         "WHERE f.addressee_id=? AND f.status='pending' AND u.disabled=0", (uid,))
-        outgoing = rows("SELECT f.id, u.username FROM friendships f JOIN users u ON u.id=f.addressee_id "
+        outgoing = rows("SELECT f.id, COALESCE(NULLIF(u.display_name,''), u.username) AS username FROM friendships f JOIN users u ON u.id=f.addressee_id "
                         "WHERE f.requester_id=? AND f.status='pending' AND u.disabled=0", (uid,))
         return jsonify({"friends": friends, "incoming": incoming, "outgoing": outgoing})
 
@@ -1133,9 +1251,13 @@ def create_app():
     @login_required()
     def api_friend_request():
         uid = g.user["id"]
-        other = one("SELECT * FROM users WHERE username=? AND disabled=0", (text(body().get("username"), 24),))
+        wanted = text(body().get("username"), 30)
+        other = one("SELECT * FROM users WHERE username=? AND disabled=0", (wanted,))
+        if not other:
+            matches = rows("SELECT * FROM users WHERE display_name=? COLLATE NOCASE AND disabled=0", (wanted,))
+            other = matches[0] if len(matches) == 1 and wanted else None
         if not other or other["id"] == uid:
-            return err("We couldn't find anyone with that username.", 404)
+            return err("We couldn't find anyone with that name.", 404)
         mine = one("SELECT * FROM friendships WHERE requester_id=? AND addressee_id=?", (uid, other["id"]))
         theirs = one("SELECT * FROM friendships WHERE requester_id=? AND addressee_id=?", (other["id"], uid))
         if mine or (theirs and theirs["status"] == "accepted"):
@@ -1179,7 +1301,7 @@ def create_app():
         ids = [g.user["id"]] + sorted(friend_ids(g.user["id"]))
         out = []
         for i in ids:
-            u = one("SELECT id, username FROM users WHERE id=? AND disabled=0", (i,))
+            u = one("SELECT id, COALESCE(NULLIF(display_name,''), username) AS username FROM users WHERE id=? AND disabled=0", (i,))
             if u:
                 out.append({"id": u["id"], "username": u["username"], "me": i == g.user["id"],
                             "workouts": week_for(i, today)["workouts"], "streak": streak_for(i, today)})
@@ -1193,11 +1315,13 @@ def create_app():
         ids = [uid] + sorted(friend_ids(uid))
         marks = ",".join("?" * len(ids))
         evs = rows(
-            "SELECT e.id, e.type, e.text, e.ref_id, e.created_at, u.username, e.user_id, "
-            "(SELECT COUNT(*) FROM cheers c WHERE c.event_id=e.id) AS cheers, "
-            "(SELECT COUNT(*) FROM cheers c WHERE c.event_id=e.id AND c.user_id=?) AS cheered "
+            "SELECT e.id, e.type, e.text, e.ref_id, e.created_at, COALESCE(NULLIF(u.display_name,''), u.username) AS username, e.user_id, "
+            "(SELECT COUNT(*) FROM reactions c WHERE c.event_id=e.id AND c.emoji='👏') AS cheers, "
+            "(SELECT COUNT(*) FROM reactions c WHERE c.event_id=e.id AND c.user_id=? AND c.emoji='👏') AS cheered "
             "FROM events e JOIN users u ON u.id=e.user_id WHERE e.user_id IN (" + marks + ") AND u.disabled=0 "
             "ORDER BY e.created_at DESC LIMIT 25", [uid] + ids)
+        for f in feed_extras:
+            f(evs, uid)
         return jsonify({"events": evs})
 
     @app.post("/api/feed/<int:eid>/cheer")
@@ -1207,10 +1331,12 @@ def create_app():
         ev = one("SELECT * FROM events WHERE id=?", (eid,))
         if not ev or ev["user_id"] == uid or ev["user_id"] not in friend_ids(uid):
             return err("Not found.", 404)
-        if one("SELECT 1 AS x FROM cheers WHERE event_id=? AND user_id=?", (eid, uid)):
-            db().execute("DELETE FROM cheers WHERE event_id=? AND user_id=?", (eid, uid))
+        mine = one("SELECT emoji FROM reactions WHERE event_id=? AND user_id=?", (eid, uid))
+        if mine and mine["emoji"] == "👏":
+            db().execute("DELETE FROM reactions WHERE event_id=? AND user_id=?", (eid, uid))
         else:
-            db().execute("INSERT INTO cheers(event_id,user_id) VALUES(?,?)", (eid, uid))
+            db().execute("INSERT OR REPLACE INTO reactions(event_id,user_id,emoji,created_at) VALUES(?,?,?,?)",
+                         (eid, uid, "👏", now()))
         db().commit()
         return jsonify({"ok": True})
 
@@ -1223,7 +1349,7 @@ def create_app():
 
     def recipe_card(r):
         uid = g.user["id"]
-        r["owner"] = (one("SELECT username FROM users WHERE id=?", (r["owner_id"],)) or {}).get("username", "?")
+        r["owner"] = (one("SELECT COALESCE(NULLIF(display_name,''), username) AS n FROM users WHERE id=?", (r["owner_id"],)) or {}).get("n", "?")
         r["cheers"] = one("SELECT COUNT(*) AS c FROM recipe_cheers WHERE recipe_id=?", (r["id"],))["c"]
         r["cheered"] = bool(one("SELECT 1 AS x FROM recipe_cheers WHERE recipe_id=? AND user_id=?", (r["id"], uid)))
         r["mine"] = r["owner_id"] == uid
@@ -1245,7 +1371,7 @@ def create_app():
         r = one("SELECT * FROM recipes WHERE id=?", (rid,))
         if not r or not can_see_recipe(r):
             return err("Recipe not found.", 404)
-        tips = rows("SELECT t.id, t.text, t.created_at, u.username FROM recipe_tips t JOIN users u ON u.id=t.user_id "
+        tips = rows("SELECT t.id, t.text, t.created_at, COALESCE(NULLIF(u.display_name,''), u.username) AS username FROM recipe_tips t JOIN users u ON u.id=t.user_id "
                     "WHERE t.recipe_id=? ORDER BY t.id", (rid,))
         return jsonify({"recipe": recipe_card(r), "tips": tips})
 
@@ -1454,7 +1580,7 @@ def create_app():
     @login_required(admin=True)
     def api_admin_users():
         return jsonify({"users": rows(
-            "SELECT u.id, u.username, u.role, u.disabled, u.created_at, "
+            "SELECT u.id, u.username, u.display_name, u.role, u.disabled, u.created_at, "
             "(SELECT MAX(s.date) FROM sessions s WHERE s.user_id=u.id AND s.ended_at IS NOT NULL) AS last_workout "
             "FROM users u ORDER BY u.username COLLATE NOCASE")})
 
@@ -1525,12 +1651,22 @@ def create_app():
     app.nightly_backup = nightly_backup
 
     # ---- background workers ----
+    tick = [0]
+    periodic = []         # tasks modules want run every ~30 seconds
+
     def alert_loop():
         while True:
             try:
                 process_alerts()
             except Exception as exc:
                 print("Alert loop error:", exc)
+            tick[0] += 1
+            if tick[0] % 30 == 0:
+                for fn in periodic:
+                    try:
+                        fn()
+                    except Exception as exc:
+                        print("Periodic task error:", exc)
             time.sleep(1)
 
     def backup_loop():
@@ -1540,6 +1676,20 @@ def create_app():
             except Exception as exc:
                 print("Backup error:", exc)
             time.sleep(6 * 3600)
+
+    h = SimpleNamespace(
+        db=db, rows=rows, one=one, err=err, body=body, num=num, text=text, valid_date=valid_date,
+        login_required=login_required, now=now, make_user=make_user, public_user=public_user,
+        too_many=too_many, attempts=attempts, issue_token=issue_token, bearer_token=bearer_token,
+        APP_VERSION=APP_VERSION, features=["workouts", "food", "friends", "recipes"],
+        data_dir=data_dir, friend_ids=friend_ids, connect=connect, payload_extras=payload_extras,
+        after_finish=after_finish, finish_session=finish_session, session_payload=session_payload,
+        clean_plan=clean_plan, plan_names=plan_names, clean_exercise=clean_exercise,
+        feed_extras=feed_extras, periodic=periodic, streak_for=streak_for, week_for=week_for,
+        worked_dates=worked_dates, body_stats=body_stats, goals_for=goals_for, add_diary=add_diary)
+    app.h = h
+    for mod in MODULES:
+        mod.register(app, h)
 
     if os.environ.get("GYMPULSE_NO_THREADS") != "1":
         threading.Thread(target=alert_loop, daemon=True).start()

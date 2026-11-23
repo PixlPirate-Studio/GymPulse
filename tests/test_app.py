@@ -336,3 +336,43 @@ def test_custom_exercises_and_plans(app):
     r = c.get("/api/routine").get_json()
     assert len([x for x in r["routine"] if x["plan"] == "Keep me"]) == 8
     assert len([x for x in r["routine"] if x["plan"] == "Beginner routine"]) == 8
+
+
+def test_display_names(app):
+    a = client(app)
+    setup_admin(a)  # logs in as "admin"
+    b = add_user(a, "sam")
+    assert a.get("/api/me").get_json()["user"]["name"] == "admin"
+    r = a.put("/api/account", json={"display_name": "  Alex   Smith "}, headers=H)
+    assert r.get_json()["user"]["display_name"] == "Alex Smith"
+    me = a.get("/api/me").get_json()["user"]
+    assert me["username"] == "admin" and me["name"] == "Alex Smith"
+    # login still uses the real username, not the display name
+    c2 = client(app)
+    assert c2.post("/api/login", json={"username": "Alex Smith", "password": "password1"}, headers=H).status_code == 401
+    assert c2.post("/api/login", json={"username": "admin", "password": "password1"}, headers=H).status_code == 200
+    # nobody can take another person's login name or display name
+    assert b.put("/api/account", json={"display_name": "admin"}, headers=H).status_code == 400
+    assert b.put("/api/account", json={"display_name": "alex smith"}, headers=H).status_code == 400
+    assert b.put("/api/account", json={"display_name": "x" * 31}, headers=H).status_code == 400
+    # friends see the display name, never the login name
+    b.post("/api/friends/request", json={"username": "Alex Smith"}, headers=H)  # found by display name
+    inc = a.get("/api/friends").get_json()["incoming"]
+    assert inc and inc[0]["username"] == "sam"
+    a.post("/api/friends/%d/accept" % inc[0]["id"], headers=H)
+    assert [f["username"] for f in b.get("/api/friends").get_json()["friends"]] == ["Alex Smith"]
+    lb = b.get("/api/leaderboard?today=2026-03-04").get_json()["leaders"]
+    assert {x["username"] for x in lb} == {"Alex Smith", "sam"}
+    sid = a.post("/api/session/start", json={"date": "2026-03-04"}, headers=H).get_json()
+    a.post("/api/session/%d/exercise/%d" % (sid["session"]["id"], sid["exercises"][0]["id"]), json={"completed": True}, headers=H)
+    a.post("/api/session/%d/finish" % sid["session"]["id"], headers=H)
+    assert b.get("/api/feed").get_json()["events"][0]["username"] == "Alex Smith"
+    rid = a.post("/api/recipes", json={"title": "Soup"}, headers=H).get_json()["id"]
+    assert b.get("/api/recipes/%d" % rid).get_json()["recipe"]["owner"] == "Alex Smith"
+    # clearing it goes back to the login name
+    a.put("/api/account", json={"display_name": ""}, headers=H)
+    assert b.get("/api/friends").get_json()["friends"][0]["username"] == "admin"
+    # admins see both names
+    a.put("/api/account", json={"display_name": "Alex Smith"}, headers=H)
+    u = [x for x in a.get("/api/admin/users").get_json()["users"] if x["username"] == "admin"][0]
+    assert u["display_name"] == "Alex Smith"

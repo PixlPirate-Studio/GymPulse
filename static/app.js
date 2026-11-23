@@ -43,26 +43,76 @@ const PLAY = 'M8 5v14l11-7z', PAUSE = 'M6 4h4v16H6V4zm8 0h4v16h-4V4z';
 const HEART = 'M12 21s-7-4.5-9.5-9A5.5 5.5 0 0112 6a5.5 5.5 0 019.5 6C19 16.5 12 21 12 21z';
 const FLAME = 'M12 2c1 4-3 5-3 9a3 3 0 006 0c0-1-.3-1.8-1-2.7 3 1.2 5 4 5 7.2a7 7 0 11-14 0c0-5 4-6.5 7-13.5z';
 
-const S = { me: null, tab: 'today', foodDate: todayStr(), friendView: 'board', histMonth: todayStr().slice(0, 7), profile: null, stats: null, session: null, exercises: [], routine: [], focus: null, plans: [], plan: (function () { try { return localStorage.getItem('gp_plan') || null; } catch (e) { return null; } })(), pushOn: false, recipeFilter: 'all', openMeal: null, pageFn: null };
+const S = { me: null, tab: 'today', foodDate: todayStr(), friendView: 'board', histMonth: todayStr().slice(0, 7), profile: null, stats: null, session: null, exercises: [], routine: [], focus: null, plans: [], plan: (function () { try { return localStorage.getItem('gp_plan') || null; } catch (e) { return null; } })(), pushOn: false, recipeFilter: 'all', openMeal: null, pageFn: null, doc: null, offline: false, notes: 0 };
+const ext = (n, ...a) => ((window.GPX && window.GPX[n]) ? window.GPX[n](...a) : '');
 let timer = null;
 try { timer = JSON.parse(localStorage.getItem('gp_timer') || 'null'); } catch (e) { timer = null; }
 let tickHandle = null;
 
-async function api(method, path, body) {
+const CACHE_PFX = 'gp_c:', OUT_KEY = 'gp_out', DOC_KEY = 'gp_doc';
+const noCache = (p) => /\/foods\/|\/photos|\/timer|\/session\/active|\/notifications|\/openapi/.test(p);
+function cacheGet(p) { try { return JSON.parse(localStorage.getItem(CACHE_PFX + p)); } catch (e) { return null; } }
+function clearCache() { try { Object.keys(localStorage).filter((k) => k.indexOf(CACHE_PFX) === 0).forEach((k) => localStorage.removeItem(k)); } catch (e) {} }
+function cachePut(p, d) { try { localStorage.setItem(CACHE_PFX + p, JSON.stringify(d)); } catch (e) { clearCache(); } }
+const QUEUEABLE = [/^\/api\/weight$/, /^\/api\/water$/, /^\/api\/measurements$/, /^\/api\/diary$/, /^\/api\/session\/\d+$/];
+const outbox = () => { try { return JSON.parse(localStorage.getItem(OUT_KEY) || '[]'); } catch (e) { return []; } };
+const outSave = (q) => { try { localStorage.setItem(OUT_KEY, JSON.stringify(q)); } catch (e) {} paintBanner(); };
+const uid8 = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+
+async function api(method, path, body, opts) {
+  opts = opts || {};
   const opt = { method, headers: { 'X-GymPulse': '1' }, credentials: 'same-origin' };
+  if (opts.key) opt.headers['Idempotency-Key'] = opts.key;
   if (body !== undefined) { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
   let res;
-  try { res = await fetch(path, opt); } catch (e) { toast("Can't reach the server. Check your connection."); throw e; }
+  try { res = await fetch(path, opt); } catch (e) {
+    S.offline = true; paintBanner();
+    if (method === 'GET') { const c = cacheGet(path); if (c) return c; }
+    else if (!opts.noqueue && QUEUEABLE.some((r) => r.test(path))) {
+      const q = outbox(); q.push({ method, path, body, key: uid8() }); outSave(q);
+      toast('Saved on this phone. It will sync when you are back online.');
+      return { ok: true, queued: true };
+    }
+    if (!opts.quiet) toast("Can't reach the server. Check your connection.");
+    const err = new Error('offline'); err.offline = true; throw err;
+  }
+  if (S.offline) { S.offline = false; paintBanner(); flushOutbox(); }
   let data = {};
   try { data = await res.json(); } catch (e) {}
-  if (res.status === 401 && S.me) { S.me = null; boot(); throw new Error('signed out'); }
-  if (!res.ok) { const e = new Error(data.error || 'Something went wrong.'); e.userMessage = data.error || 'Something went wrong.'; throw e; }
+  if (res.status === 401 && S.me && !opts.noauth) { S.me = null; boot(); throw new Error('signed out'); }
+  if (!res.ok) { const e = new Error(data.error || 'Something went wrong.'); e.userMessage = data.error || 'Something went wrong.'; e.status = res.status; throw e; }
+  if (method === 'GET' && !noCache(path)) cachePut(path, data);
   return data;
 }
-const GET = (p) => api('GET', p);
-const POST = (p, b) => api('POST', p, b || {});
-const PUT = (p, b) => api('PUT', p, b || {});
-const DEL = (p) => api('DELETE', p);
+const GET = (p, o) => api('GET', p, undefined, o);
+const POST = (p, b, o) => api('POST', p, b || {}, o);
+const PUT = (p, b, o) => api('PUT', p, b || {}, o);
+const DEL = (p, o) => api('DELETE', p, undefined, o);
+
+let flushing = false;
+async function flushOutbox() {
+  if (flushing) return; flushing = true;
+  try {
+    let q = outbox();
+    while (q.length) {
+      const it = q[0];
+      try { await api(it.method, it.path, it.method === 'DELETE' ? undefined : it.body, { key: it.key, noqueue: true, quiet: true }); }
+      catch (e) { if (e.offline) break; /* a real error from the server: drop that item */ }
+      q = outbox().slice(1); outSave(q);
+    }
+  } finally { flushing = false; }
+  if (!outbox().length && !S.offline && S.tab === 'today' && !S.pageFn) { /* quiet */ }
+}
+function paintBanner() {
+  let b = $('#offbar');
+  const n = outbox().length + (S.doc && S.doc.dirty ? 1 : 0);
+  document.body.classList.toggle('hasbar', S.offline || n > 0);
+  if (!S.offline && !n) { if (b) b.remove(); return; }
+  if (!b) { b = document.createElement('div'); b.id = 'offbar'; b.className = 'offbar'; document.body.appendChild(b); }
+  b.textContent = S.offline ? "You're offline. Everything is saved on this phone" + (n ? ' (' + n + ' waiting to sync).' : '.') : 'Syncing your changes...';
+}
+window.addEventListener('online', () => { S.offline = false; paintBanner(); flushOutbox(); syncNow(); });
+setInterval(() => { if (outbox().length || (S.doc && S.doc.dirty)) { flushOutbox(); syncNow(); } }, 20000);
 
 function toast(msg) {
   const t = document.createElement('div');
@@ -109,11 +159,14 @@ async function boot() {
   $('#nav').hidden = true; closePage();
   let me;
   try { me = await GET('/api/me'); } catch (e) { $('#app').innerHTML = '<div class="center login"><p class="muted">Can\'t reach the server.</p><div class="spacer"></div><button class="btn" data-a="reload">Try again</button></div>'; return; }
+  const invite = new URLSearchParams(location.search).get('invite');
+  if (!me.needs_setup && !me.user && invite && window.GPX && window.GPX.invite) return window.GPX.invite(invite);
   if (me.needs_setup) return renderAuth(true);
   if (!me.user) return renderAuth(false);
-  S.me = me.user;
+  S.me = me.user; S.doc = loadDoc();
   buildNav();
-  refreshPushState();
+  refreshPushState(); flushOutbox(); pollNotes(); paintBanner();
+  if (S.doc && S.doc.dirty) syncSoon();
   go(S.tab);
 }
 function renderAuth(setup) {
@@ -129,6 +182,22 @@ function renderAuth(setup) {
   $('#u').addEventListener('keydown', enter); $('#p').addEventListener('keydown', enter);
 }
 
+// ---------- notifications ----------
+const bell = () => '<button class="sq bellbtn" data-a="notes" aria-label="Notifications">' + I('bell') + (S.notes ? '<i class="cnt">' + (S.notes > 9 ? '9+' : S.notes) + '</i>' : '') + '</button>';
+function paintBell() { document.querySelectorAll('.bellbtn').forEach((b) => { b.outerHTML = bell(); }); }
+async function pollNotes() {
+  if (!S.me || document.hidden) return;
+  try {
+    const r = await GET('/api/notifications', { quiet: true });
+    S.notes = r.unread;
+    let seen = null; try { seen = localStorage.getItem('gp_seen_note'); } catch (e) {}
+    if (seen !== null) r.items.filter((n) => n.id > +seen && (n.kind === 'badge' || n.kind === 'nudge' || n.kind === 'challenge')).reverse().forEach((n) => toast(n.text));
+    try { localStorage.setItem('gp_seen_note', String(r.items.length ? r.items[0].id : 0)); } catch (e) {}
+    paintBell();
+  } catch (e) {}
+}
+setInterval(pollNotes, 60000);
+
 // ---------- navigation ----------
 const TABS = [['today', 'clock', 'Today'], ['food', 'food', 'Food'], ['progress', 'progress', 'Progress'], ['friends', 'friends', 'Friends'], ['body', 'body', 'Body'], ['history', 'history', 'History']];
 function buildNav() {
@@ -142,7 +211,7 @@ function go(tab) {
   S.tab = tab; highlight(tab);
   window.scrollTo(0, 0);
   const fn = { today: viewToday, food: viewFood, progress: viewProgress, friends: viewFriends, body: viewBody, history: viewHistory }[tab];
-  fn().catch((e) => { if (e.message !== 'signed out') { $('#app').innerHTML = '<div class="card">Something went wrong loading this page. <button class="btn sm" data-a="reload">Reload</button></div>'; } });
+  fn().then(() => ext('after', tab)).catch((e) => { if (e.message !== 'signed out') { $('#app').innerHTML = '<div class="card">Something went wrong loading this page. <button class="btn sm" data-a="reload">Reload</button></div>'; } });
 }
 const setApp = (h) => { $('#app').innerHTML = h; };
 
@@ -222,10 +291,65 @@ function sessPausedMs() { const st = sessState(); return (st.pausedMs || 0) + (s
 function sessElapsed() { const st = sessState(); const end = st.pausedAt || Date.now(); return Math.max(0, (end - S.session.started_at * 1000 - (st.pausedMs || 0)) / 1000); }
 
 // ---------- Today ----------
+// The workout in progress lives on the phone and is sent to the server in the background.
+// That is what lets it keep working with no signal at the gym.
+function loadDoc() { try { const d = JSON.parse(localStorage.getItem(DOC_KEY) || 'null'); return d && S.me && d.uid === S.me.id ? d : null; } catch (e) { return null; } }
+function persistDoc() { try { if (S.doc) localStorage.setItem(DOC_KEY, JSON.stringify(S.doc)); else localStorage.removeItem(DOC_KEY); } catch (e) {} }
+function bindDoc() {
+  const d = S.doc;
+  if (d && !d.ended_at) { S.session = { id: d.cid, started_at: d.started_at, date: d.date, plan: d.plan }; S.exercises = d.exercises; }
+  else { S.session = null; S.exercises = []; }
+}
+function saveDoc() { if (S.doc) S.doc.dirty = true; persistDoc(); paintBanner(); syncSoon(); }
+let syncTimer = null, syncing = false;
+function syncSoon() { clearTimeout(syncTimer); syncTimer = setTimeout(syncNow, 700); }
+function docPayload() {
+  const d = S.doc;
+  return { cid: d.cid, session_id: d.session_id, plan: d.plan, date: d.date, started_at: d.started_at, ended_at: d.ended_at || null, paused_sec: d.paused_sec || 0,
+    exercises: d.exercises.map((e) => ({ cid: e.cid, id: e.serverId, routine_id: e.routine_id, name: e.name, kind: e.kind, sets_total: e.sets_total, sets_done: e.sets_done, completed: !!e.completed, category: e.category, note: e.note, reps: e.reps, seconds: e.seconds, sets: (e.logs || []).map((l) => ({ set_no: l.set_no, weight_lb: l.weight_lb, reps: l.reps })) })) };
+}
+async function syncNow() {
+  const d = S.doc;
+  if (!d || syncing || !d.dirty) return;
+  syncing = true; const mark = d.rev = (d.rev || 0) + 1;
+  try {
+    const r = await POST('/api/sync/workout', docPayload(), { quiet: true, noqueue: true });
+    if (r.session && !d.session_id) d.session_id = r.session.id;
+    if (d.rev === mark) d.dirty = false;
+    if (d.ended_at && !d.dirty) {
+      S.doc = null; persistDoc(); paintBanner();
+      const x = r.extras || {};
+      if (x.prs) toast('New personal best' + (x.prs > 1 ? 's' : '') + '! ' + x.prs + ' record' + (x.prs > 1 ? 's' : ''));
+      pollNotes(true);
+      if (S.tab === 'today' && !S.pageFn) go('today');
+    } else persistDoc();
+  } catch (e) { if (!e.offline && e.status === 400) { /* bad data: keep it, don't loop forever */ d.dirty = false; persistDoc(); } }
+  finally { syncing = false; paintBanner(); }
+}
+function docFromServer(act) {
+  const s = act.session, d = { uid: S.me.id, cid: s.cid || 's' + s.id, session_id: s.id, plan: s.plan, date: s.date, started_at: s.started_at, nextId: 1, exercises: [] };
+  act.exercises.forEach((e) => { d.nextId = Math.max(d.nextId, e.id + 1); d.exercises.push({ id: e.id, serverId: e.id, cid: e.cid || 's' + e.id, routine_id: e.routine_id, name: e.name, kind: e.kind, sets_total: e.sets_total, sets_done: e.sets_done, completed: e.completed, category: e.category, note: e.note, reps: e.reps, seconds: e.seconds, logs: (e.logs || []).map((l) => ({ set_no: l.set_no, weight_lb: l.weight_lb, reps: l.reps })), last: e.last || null, best: 0 }); });
+  return d;
+}
 async function loadToday() {
-  const [prof, act, rt, prog] = await Promise.all([GET('/api/profile'), GET('/api/session/active'), GET('/api/routine'), GET('/api/progress?today=' + todayStr())]);
-  S.profile = prof.profile; S.stats = prof.stats; S.session = act.session; S.exercises = act.exercises; S.routine = rt.routine; S.plans = rt.plans; S.prog = prog;
+  if (!S.doc) S.doc = loadDoc();
+  const calls = [GET('/api/profile'), GET('/api/routine'), GET('/api/progress?today=' + todayStr())];
+  if (!S.doc) calls.push(GET('/api/session/active', { quiet: true }).catch(() => ({ session: null, exercises: [] })));
+  const [prof, rt, prog, act] = await Promise.all(calls);
+  S.profile = prof.profile; S.stats = prof.stats; S.routine = rt.routine; S.plans = rt.plans; S.prog = prog;
+  if (!S.doc && act && act.session) { S.doc = docFromServer(act); persistDoc(); }
+  bindDoc();
+  if (S.doc && S.doc.dirty) syncSoon();
   if (S.plans.indexOf(S.plan) < 0) setPlan(S.plans[0]);
+}
+const docEx = (id) => (S.doc ? S.doc.exercises.find((x) => x.id === +id) : null);
+const e1rm = (w, r) => (w > 0 && r > 0 ? w * (1 + r / 30) : 0);
+async function fetchLast() {
+  const d = S.doc; if (!d) return;
+  await Promise.all(d.exercises.filter((e) => e.kind === 'sets' && !e.last).map(async (e) => {
+    try { const r = await GET('/api/exercise-history?name=' + encodeURIComponent(e.name), { quiet: true }); e.last = r.last; e.best = r.best_e1rm || 0; } catch (x) {}
+  }));
+  persistDoc(); if (S.tab === 'today' && !S.pageFn && S.doc === d && !d.ended_at && !(document.activeElement && document.activeElement.tagName === 'INPUT')) go('today');
 }
 const exSecs = (e) => ({ secs: e.seconds || (e.kind === 'timed' ? 300 : 75), note: e.note || '', cat: e.category || '' });
 const exSub = (e) => e.kind === 'timed' ? mmss(e.seconds) + ' timer' : e.sets_total + ' sets' + (e.reps ? ' of ' + esc(e.reps) + ' reps' : '') + ' · rest ' + mmss(e.seconds);
@@ -236,13 +360,31 @@ function setPlan(p) { S.plan = p; try { localStorage.setItem('gp_plan', p); } ca
 const streakPill = (n) => n > 0 ? '<span class="pill">' + IF(FLAME) + n + '-day streak</span>' : '<span></span>';
 const startLink = () => '<a href="#" data-a="guide" style="display:flex;align-items:center;gap:6px;min-height:44px;font-size:13px;color:var(--cyan);font-weight:700;text-decoration:none">New here? Start here ' + I('next').replace('class="ic ', 'style="width:14px;height:14px;stroke-width:2.6" class="ic ') + '</a>';
 
+const lbs = (w) => (w % 1 ? w.toFixed(1) : String(w));
+function lastLine(e) {
+  const l = e.last; if (!l || !l.sets || !l.sets.length) return '';
+  return '<div class="lastt">Last time' + (l.date ? ' (' + fmtDate(l.date) + ')' : '') + ': ' + l.sets.map((x) => (x.weight_lb ? lbs(x.weight_lb) + ' lb' : 'body') + ' × ' + x.reps).join(' · ') + '</div>';
+}
+function setLogBlock(e) {
+  const next = Math.min(e.sets_total, e.sets_done + 1), logs = e.logs || [];
+  const prevLog = logs.find((l) => l.set_no === next) || logs.find((l) => l.set_no === e.sets_done) || {};
+  const ls = (e.last && e.last.sets) || [], lastSet = ls.find((l) => l.set_no === next) || ls[ls.length - 1] || {};
+  const w = prevLog.weight_lb != null ? prevLog.weight_lb : (lastSet.weight_lb || ''), r = prevLog.reps != null ? prevLog.reps : (lastSet.reps || '');
+  let h = '<div class="logbox"><div class="eyebrow" style="font-size:10px">Set ' + next + ' · what did you lift?</div><div class="row gap8" style="margin-top:6px">' +
+    '<div class="field" style="margin:0;flex:1"><label>Weight (lb)</label><input id="lw" class="inputmono" type="number" inputmode="decimal" step="0.5" min="0" placeholder="0" value="' + esc(w === 0 ? '' : w) + '"></div>' +
+    '<div class="field" style="margin:0;flex:1"><label>Reps</label><input id="lr" class="inputmono" type="number" inputmode="numeric" min="0" placeholder="0" value="' + esc(r === 0 ? '' : r) + '"></div></div>' + lastLine(e);
+  if (logs.length) h += '<div class="loglist">' + logs.slice().sort((a, b) => a.set_no - b.set_no).map((l) => '<span class="logchip' + (l.pr ? ' pr' : '') + '">' + (l.pr ? '★ ' : '') + 'Set ' + l.set_no + ': ' + (l.weight_lb ? lbs(l.weight_lb) + ' lb × ' : '') + l.reps + '</span>').join('') + '</div>';
+  return h + '<button class="howto" data-a="howto" data-name="' + esc(e.name) + '">How to do this</button></div>';
+}
+
 async function viewToday() {
   await loadToday();
   const s = S.session, p = S.prog;
   let h = '';
   if (!s) {
     const list = S.routine.filter((r) => r.plan === S.plan);
-    h += '<div class="head"><div><h1 class="title">Today</h1><p class="sub">' + esc(motivation(p)) + '</p></div></div>';
+    h += '<div class="head"><div><h1 class="title">Today</h1><p class="sub">' + esc(motivation(p)) + '</p></div>' + bell() + '</div>';
+    if (S.doc && S.doc.ended_at) h += '<div class="card hi tight small">Your last workout is saved on this phone and will upload as soon as you are online.</div>';
     if (isIOS() && !isStandalone()) h += '<div class="card hi tight"><b>Install GymPulse on your iPhone</b><div class="small muted" style="margin-top:4px">Tap the Share button in Safari, then "Add to Home Screen". It opens full screen and can buzz you when a rest is over.</div></div>';
     h += '<div class="row between">' + startLink() + streakPill(p.streak) + '</div>';
     h += '<div id="rest-slot">' + (timer ? timerPanel() : '') + '</div>' + planChips();
@@ -278,8 +420,9 @@ async function viewToday() {
       if (e.kind === 'sets') {
         h += '<div class="setrow">';
         for (let n = 1; n <= e.sets_total; n++) h += '<button class="setbtn' + (n <= e.sets_done ? ' on' : '') + '" data-a="set" data-id="' + e.id + '" data-n="' + n + '" data-done="' + e.sets_done + '" data-secs="' + x.secs + '" data-name="' + esc(e.name) + '">' + (n <= e.sets_done ? I('check') : '<span class="o"></span>') + 'Set ' + n + '</button>';
-        h += '</div>' + (quick ? '' : '<div id="rest-slot">' + (timer ? timerPanel() : '') + '</div>');
-        if (!timer || quick) h += '<div class="buzz" style="color:var(--muted)">' + I('bell') + 'Tap a set when you finish it. Your ' + mmss(x.secs) + ' rest starts automatically.</div>';
+        h += '</div>' + setLogBlock(e);
+        h += (quick ? '' : '<div id="rest-slot">' + (timer ? timerPanel() : '') + '</div>');
+        if (!timer || quick) h += '<div class="buzz" style="color:var(--muted)">' + I('bell') + 'Fill in what you lifted, then tap the set. Your ' + mmss(x.secs) + ' rest starts automatically.</div>';
       } else {
         h += (quick ? '' : '<div id="rest-slot">' + (timer && timer.exId === e.id ? timerPanel() : '') + '</div>');
         if (!(timer && timer.exId === e.id)) h += '<div class="row gap8"><button class="btn" style="flex:1;min-height:48px" data-a="timed-start" data-id="' + e.id + '" data-secs="' + x.secs + '" data-name="' + esc(e.name) + '">' + IF(PLAY) + 'Start ' + mmss(x.secs) + '</button></div>';
@@ -393,7 +536,7 @@ async function viewProgress() {
     '<p class="small muted" style="margin-top:12px;font-size:12px">Targets from CDC adult guidelines: 150 min moderate activity and 2 strength days per week.</p></div>';
   h += '<div class="card"><div class="row between"><h3 style="margin:0;font-size:16px">Weight</h3>' + (last ? '<span class="mono lime" style="font-weight:700;font-size:14px">' + last.toFixed(1) + ' lb' + (ws.length > 1 ? ' · ' + (delta > 0 ? '+' : '') + delta.toFixed(1) : '') + '</span>' : '') + '</div>' + weightChart(ws, st.healthy_max, prog.goal_weight_lb && prog.goal_weight_lb < (st.healthy_max || 9999) ? prog.goal_weight_lb : null) + '</div>';
   const jm = journeyMessage(prog);
-  h += '<div class="card good"><div style="font-weight:800;color:var(--lime);margin-bottom:6px">' + esc(jm[0]) + '</div><div style="line-height:1.5;font-size:15px">' + esc(jm[1]) + '</div></div>';
+  h += '<div class="card good"><div style="font-weight:800;color:var(--lime);margin-bottom:6px">' + esc(jm[0]) + '</div><div style="line-height:1.5;font-size:15px">' + esc(jm[1]) + '</div></div><div id="x-bot"></div>';
   setApp(h);
 }
 
@@ -420,7 +563,7 @@ async function viewBody() {
   h += '<div class="tiles"><div class="tile"><div class="eyebrow">Healthy range</div><div class="n lime" style="font-size:18px">' + (st.healthy_min ? r0(st.healthy_min) + '-' + r0(st.healthy_max) : '--') + '</div><div class="t">lb' + (p.height_in ? ' at ' + ftIn(p.height_in) : '') + '</div></div>' +
     '<div class="tile"><div class="eyebrow">Stay the same</div><div class="n cyan" style="font-size:18px">' + (st.stay_cal ? '~' + st.stay_cal.toLocaleString() : '--') + '</div><div class="t">cal a day</div></div>' +
     '<div class="tile"><div class="eyebrow">To goal</div><div class="n amber" style="font-size:18px">' + (st.lbs_to_goal != null ? r0(st.lbs_to_goal) + ' lb' : '--') + '</div><div class="t">' + (st.weeks_to_goal ? '~' + st.weeks_to_goal + ' wks at 1 lb/wk' : '&nbsp;') + '</div></div></div>';
-  h += '<p class="small muted" style="font-size:12px;line-height:1.5">Estimates only, not medical advice. Calories to stay the same weight are a standard estimate (Mifflin-St Jeor). A safe pace is 1-2 lb a week (CDC).</p>';
+  h += '<p class="small muted" style="font-size:12px;line-height:1.5">Estimates only, not medical advice. Calories to stay the same weight are a standard estimate (Mifflin-St Jeor). A safe pace is 1-2 lb a week (CDC).</p><div id="x-bot"></div>';
   setApp(h);
 }
 
@@ -431,9 +574,9 @@ async function viewFood() {
   S.profile = prof.profile; S.stats = prof.stats;
   const t = d.totals, g = d.goals, left = g.calories - t.calories, pct = Math.min(1, t.calories / g.calories), C = 2 * Math.PI * 54;
   const todayDone = (prog.week.days.find((x) => x.date === todayStr()) || {}).worked;
-  const workout = act.session ? ['in progress', 'cyan'] : todayDone ? ['done', 'lime'] : ['not yet', 'muted'];
+  const workout = (act.session || (S.doc && !S.doc.ended_at)) ? ['in progress', 'cyan'] : todayDone ? ['done', 'lime'] : ['not yet', 'muted'];
   let h = '<div class="head"><div><h1 class="title">Food</h1><p class="sub">' + foodTitle(S.foodDate) + '</p></div><div class="row gap8"><button class="btn outline" style="min-height:44px;padding:0 16px" data-a="recipes">Recipes</button><button class="btn" style="min-height:44px;padding:0 14px" data-a="add-food" data-meal="' + defaultMeal() + '">' + I('plus') + ' Add food</button></div></div>';
-  h += '<div class="row between" style="margin-bottom:12px"><button class="sq" data-a="food-day" data-d="-1" aria-label="Previous day">' + I('back') + '</button><span class="small muted" style="font-weight:600">' + (S.foodDate === todayStr() ? 'Today' : fmtDate(S.foodDate)) + '</span><button class="sq" data-a="food-day" data-d="1" aria-label="Next day">' + I('next') + '</button></div>';
+  h += '<div id="x-top"></div><div class="row between" style="margin-bottom:12px"><button class="sq" data-a="food-day" data-d="-1" aria-label="Previous day">' + I('back') + '</button><span class="small muted" style="font-weight:600">' + (S.foodDate === todayStr() ? 'Today' : fmtDate(S.foodDate)) + '</span><button class="sq" data-a="food-day" data-d="1" aria-label="Next day">' + I('next') + '</button></div>';
   h += '<div class="card"><div class="row gap12"><div class="ring"><svg width="130" height="130" viewBox="0 0 130 130"><circle cx="65" cy="65" r="54" stroke="#1E293B" stroke-width="14" fill="none"/><circle cx="65" cy="65" r="54" stroke="' + (left < 0 ? '#FB7185' : '#A3E635') + '" stroke-width="14" fill="none" stroke-linecap="round" stroke-dasharray="' + (C * pct).toFixed(1) + ' ' + C.toFixed(1) + '"/></svg><div class="mid"><div class="mono" style="font-size:28px;font-weight:800">' + r0(Math.abs(left)) + '</div><div class="small muted" style="font-size:12px">cal ' + (left < 0 ? 'over' : 'left') + '</div></div></div>' +
     '<div class="grow"><div class="row between small" style="margin-bottom:6px"><span class="muted">Daily goal</span><b class="mono">' + g.calories.toLocaleString() + '</b></div><div class="row between small" style="margin-bottom:6px"><span class="muted">Food eaten</span><b class="mono lime">' + r0(t.calories).toLocaleString() + '</b></div><div class="row between small" style="margin-bottom:8px"><span class="muted">Workout today</span><b class="mono ' + workout[1] + '">' + workout[0] + '</b></div>' +
     '<div class="muted" style="font-size:11px;line-height:1.4">' + (g.personalized && S.stats.stay_cal ? 'Goal = the ~' + S.stats.stay_cal.toLocaleString() + ' cal to stay the same weight' + (S.stats.goal_cal < S.stats.stay_cal ? ', minus 500, to lose about 1 lb a week.' : S.stats.goal_cal > S.stats.stay_cal ? ', plus 300, to gain slowly.' : '.') : 'Add your body stats on the Body tab for a personal goal.') + '</div></div></div></div>';
@@ -444,6 +587,7 @@ async function viewFood() {
       '<button class="sq' + (es.length ? '' : ' lime') + '" data-a="add-food" data-meal="' + m + '" aria-label="Add to ' + m + '" style="width:48px;height:48px">' + I('plus') + '</button></div>' +
       (open ? es.map((e) => '<div class="entry"><div class="grow"><div style="font-weight:600">' + esc(e.name) + '</div><div class="small muted">' + e.servings + ' × ' + esc(e.serving) + '</div></div><div class="mono" style="font-weight:700">' + r0(e.calories) + '</div><button class="sq" data-a="del-entry" data-id="' + e.id + '" aria-label="Remove" style="width:36px;height:36px;color:var(--rose)">' + I('dots').replace('<path d="' + P.dots + '"/>', '<path d="M6 6l12 12M18 6L6 18"/>') + '</button></div>').join('') : '') + '</div>';
   });
+  h += '<div id="x-bot"></div>';
   setApp(h);
 }
 function defaultMeal() { const h = new Date().getHours(); return h < 10 ? 'breakfast' : h < 15 ? 'lunch' : h < 21 ? 'dinner' : 'snacks'; }
@@ -456,7 +600,7 @@ async function pageAddFood(meal) {
     '<div class="seg" style="margin-bottom:12px">' + [['all', 'All'], ['recent', 'Recent'], ['mine', 'My foods']].map((s) => '<button data-a="fscope" data-s="' + s[0] + '" class="' + (addCtx.scope === s[0] ? 'on' : '') + '">' + s[1] + '</button>').join('') + '</div>' +
     '<div id="fres"></div>' +
     '<div class="card hi" id="barcard"><div class="row gap12"><div class="sq cyan dark" style="width:48px;height:48px;background:#0c2733;color:var(--cyan);border-color:#155e75">' + I('barcode') + '</div><div><b>Look up a barcode</b><div class="small muted" style="font-size:12px">Type the number printed under the barcode to fill in the label from Open Food Facts.</div></div></div>' +
-    '<div class="row gap8" style="margin-top:12px"><input id="fbar" inputmode="numeric" placeholder="Barcode number"><button class="btn cyan" data-a="barcode">Look up</button></div></div>' +
+    '<div class="row gap8" style="margin-top:12px"><input id="fbar" inputmode="numeric" placeholder="Barcode number"><button class="btn cyan" data-a="barcode">Look up</button></div>' + ext('scanBtn') + '</div>' +
     '<button class="btn alt block" data-a="custom-food" style="min-height:52px">Can\'t find it? Create your own food</button>');
   $('#fq').addEventListener('input', debounce(() => { addCtx.q = val('fq'); runFoodSearch(); }, 250));
   runFoodSearch();
@@ -523,7 +667,7 @@ async function pageRecipe(id) {
   d.tips.forEach((t) => { h += '<div class="card good tight"><b class="lime">' + esc(t.username) + ':</b> ' + esc(t.text) + ' <span class="muted">· ' + ago(t.created_at) + '</span></div>'; });
   h += '<div class="row gap8" style="margin-bottom:12px"><input id="tip" placeholder="Share a tip (a swap or a shortcut)"><button class="btn alt" data-a="tip-send" data-id="' + r.id + '">Send</button></div>';
   const meal = defaultMeal();
-  h += '<div class="row gap8">' + (r.calories ? '<button class="btn" style="flex:1;min-height:56px" data-a="recipe-log-go" data-id="' + r.id + '" data-meal="' + meal + '">Add 1 serving to ' + meal + '</button>' : '<div style="flex:1"></div>') +
+  h += ext('recipeExtra', r) + '<div class="row gap8">' + (r.calories ? '<button class="btn" style="flex:1;min-height:56px" data-a="recipe-log-go" data-id="' + r.id + '" data-meal="' + meal + '">Add 1 serving to ' + meal + '</button>' : '<div style="flex:1"></div>') +
     '<button class="sq" data-a="recipe-cheer" data-id="' + r.id + '" style="width:56px;height:56px;' + (r.cheered ? 'color:var(--lime);border-color:rgba(163,230,53,.5);background:#17240f' : '') + '" aria-label="Save">' + IF(HEART) + '</button></div>';
   if (r.mine) h += '<div class="row gap8" style="margin-top:12px"><button class="btn alt" style="flex:1" data-a="recipe-edit" data-id="' + r.id + '">Edit</button><button class="btn danger" style="flex:1" data-a="recipe-del" data-id="' + r.id + '">Delete</button></div>';
   setPage(h);
@@ -532,15 +676,15 @@ async function pageRecipe(id) {
 // ---------- Friends ----------
 async function viewFriends() {
   const [lb, fr, ev] = await Promise.all([GET('/api/leaderboard?today=' + todayStr()), GET('/api/friends'), GET('/api/feed')]);
-  let h = '<div class="head"><div><h1 class="title">Friends</h1><p class="sub">Show up for each other</p></div></div>';
-  h += '<div class="row gap8" style="margin-bottom:12px"><input id="fr-name" autocapitalize="none" autocorrect="off" placeholder="Add a friend by username"><button class="btn" data-a="friend-add" style="min-height:48px">Add</button></div>';
+  let h = '<div class="head"><div><h1 class="title">Friends</h1><p class="sub">Show up for each other</p></div>' + bell() + '</div><div id="x-top"></div>';
+  h += '<div class="row gap8" style="margin-bottom:12px"><input id="fr-name" autocapitalize="none" autocorrect="off" placeholder="Add a friend by their name"><button class="btn" data-a="friend-add" style="min-height:48px">Add</button></div>';
   fr.incoming.forEach((x) => { h += '<div class="card hi tight"><div class="row gap12">' + avatar(x.username) + '<div class="grow"><b>' + esc(x.username) + '</b> wants to connect</div><button class="btn sm" data-a="friend-accept" data-id="' + x.id + '">Accept</button><button class="btn alt sm" data-a="friend-ignore" data-id="' + x.id + '">Ignore</button></div></div>'; });
   fr.outgoing.forEach((x) => { h += '<div class="card tight"><div class="row gap12">' + avatar(x.username) + '<div class="grow small muted">Waiting for <b class="soft">' + esc(x.username) + '</b> to accept</div><button class="btn alt sm" data-a="friend-ignore" data-id="' + x.id + '">Cancel</button></div></div>'; });
   h += '<div class="card"><div class="row between" style="margin-bottom:6px"><h3 style="margin:0;font-size:16px">This week</h3><span class="small muted" style="font-size:12px">Workouts · streak</span></div>' + lb.leaders.map((u, i) => '<div class="lbrow' + (u.me ? ' me' : '') + '"><span class="rank' + (i === 0 ? ' first' : '') + '">' + (i + 1) + '</span>' + avatar(u.username) + '<div class="grow"><b>' + esc(u.username) + '</b>' + (u.me ? ' <span class="muted small">(you)</span>' : '') + '</div><span class="mono lime" style="font-weight:700;font-size:13px">' + u.workouts + ' · ' + u.streak + 'd</span></div>').join('') + (lb.leaders.length < 2 ? '<p class="small muted" style="margin-top:8px">Add a friend to see how you stack up.</p>' : '') + '</div>';
   h += '<div class="eyebrow" style="margin:18px 0 10px">Activity</div>';
-  h += ev.events.length ? ev.events.map((e) => '<div class="card tight"><div class="row gap12"><div class="grow"><b>' + esc(e.username) + '</b> ' + esc(e.text) + '<div class="small muted" style="margin-top:3px">' + ago(e.created_at) + (e.cheers ? ' · ' + e.cheers + ' cheer' + (e.cheers === 1 ? '' : 's') : '') + '</div></div>' +
+  h += ev.events.length ? ev.events.map((e) => ext('feedRow', e) || '<div class="card tight"><div class="row gap12"><div class="grow"><b>' + esc(e.username) + '</b> ' + esc(e.text) + '<div class="small muted" style="margin-top:3px">' + ago(e.created_at) + (e.cheers ? ' · ' + e.cheers + ' cheer' + (e.cheers === 1 ? '' : 's') : '') + '</div></div>' +
     (e.type === 'recipe' ? '<button class="btn outline sm" data-a="recipe-open" data-id="' + e.ref_id + '">View</button>' : e.user_id !== S.me.id ? '<button class="btn sm" data-a="cheer" data-id="' + e.id + '" style="' + (e.cheered ? '' : 'background:#17240f;color:var(--lime);border:1px solid rgba(163,230,53,.4)') + '">' + IF(HEART) + 'Cheer</button>' : '') + '</div></div>').join('') : '<div class="card muted">Nothing yet. Finish a workout to be the first post!</div>';
-  if (fr.friends.length) h += '<div class="eyebrow" style="margin:18px 0 10px">Your friends</div><div class="card tight">' + fr.friends.map((x) => '<div class="row gap12" style="padding:6px 0">' + avatar(x.username) + '<div class="grow"><b>' + esc(x.username) + '</b></div><button class="btn alt sm" data-a="friend-remove" data-id="' + x.id + '">Remove</button></div>').join('') + '</div>';
+  if (fr.friends.length) h += '<div class="eyebrow" style="margin:18px 0 10px">Your friends</div><div class="card tight">' + fr.friends.map((x) => '<div class="row gap12" style="padding:6px 0">' + avatar(x.username) + '<div class="grow"><b>' + esc(x.username) + '</b></div>' + ext('nudge', x) + '<button class="btn alt sm" data-a="friend-remove" data-id="' + x.id + '">Remove</button></div>').join('') + '</div>';
   h += '<p class="small muted" style="font-size:12px;line-height:1.5;margin-top:12px">Friends see your workouts and streaks. Your weight, food and body stats stay private.</p>';
   setApp(h);
 }
@@ -571,7 +715,9 @@ async function pageSettings() {
   const prof = await GET('/api/profile'); S.profile = prof.profile; const p = prof.profile;
   await refreshPushState();
   setPage('<div class="head back">' + backBtn() + '<h1 class="title" style="font-size:24px">Settings</h1></div>' +
-    '<div class="card"><div class="row gap12">' + avatar(S.me.username) + '<div class="grow"><b>' + esc(S.me.username) + '</b><div class="small muted">Signed in on this device</div></div>' + (S.me.role === 'admin' ? '<span class="badge amber">Admin</span>' : '') + '</div></div>' +
+    '<div class="card"><div class="row gap12">' + avatar(S.me.name) + '<div class="grow"><b>' + esc(S.me.name) + '</b><div class="small muted">Login: ' + esc(S.me.username) + '</div></div>' + (S.me.role === 'admin' ? '<span class="badge amber">Admin</span>' : '') + '</div><div class="hr"></div>' +
+    '<div class="field" style="margin-bottom:10px"><label>Display name</label><input id="dn" maxlength="30" placeholder="' + esc(S.me.username) + '" value="' + esc(S.me.display_name || '') + '" autocomplete="off"></div>' +
+    '<div class="row between gap12"><div class="small muted" style="font-size:12px;line-height:1.4">This is the name your friends see. You still sign in as <b class="soft">' + esc(S.me.username) + '</b>.</div><button class="btn sm" data-a="save-name">Save</button></div></div>' +
     '<div class="card"><div class="eyebrow" style="font-size:10px;margin-bottom:12px">Rest alerts</div>' +
     '<div class="row between" style="gap:14px;margin-bottom:14px"><div><b>Alert when rest ends</b><div class="small muted" style="font-size:12px;margin-top:2px">Works with the screen locked. Mirrors to your Apple Watch.</div></div><label class="sw"><input type="checkbox" data-c="alert"' + (S.pushOn ? ' checked' : '') + '><i></i></label></div>' +
     '<div class="row between" style="gap:14px;margin-bottom:12px"><div><b>Nudge again after 30 sec</b><div class="small muted" style="font-size:12px;margin-top:2px">Repeats until you open the app</div></div><label class="sw"><input type="checkbox" data-c="nudge"' + (p.nudge ? ' checked' : '') + '><i></i></label></div>' +
@@ -582,10 +728,11 @@ async function pageSettings() {
     '<div class="row between" style="margin-bottom:12px"><b>Start Apple Timer with each rest</b><label class="sw"><input type="checkbox" data-c="apple"' + (p.apple_timer ? ' checked' : '') + '><i></i></label></div>' +
     '<button class="btn cyan block" data-a="shortcut-help">How to add the one-time Shortcut</button></div>' +
     '<div class="card"><div class="row between"><div><b>Units</b><div class="small muted" style="font-size:12px">Pounds and feet / inches</div></div><span class="badge lime">lb</span></div></div>' +
-    '<div class="card tight" data-a="routine" style="cursor:pointer"><div class="row between"><div><b>My workouts</b><div class="small muted" style="font-size:12px">Create workouts, add custom exercises and timers</div></div><span class="muted">' + I('next') + '</span></div></div>' +
+    '<div id="x-set"></div><div class="card tight" data-a="routine" style="cursor:pointer"><div class="row between"><div><b>My workouts</b><div class="small muted" style="font-size:12px">Create workouts, add custom exercises and timers</div></div><span class="muted">' + I('next') + '</span></div></div>' +
     (S.me.role === 'admin' ? '<div class="card warn tight" data-a="admin" style="cursor:pointer"><div class="row between"><div><b>Manage users</b><div class="small muted" style="font-size:12px">Admin only · add users, reset passwords, backups</div></div><span class="amber">' + I('next') + '</span></div></div>' : '') +
     '<div class="row gap8"><button class="btn alt" style="flex:1" data-a="pw-sheet">Change password</button><button class="btn alt" style="flex:1;color:var(--rose)" data-a="logout">Sign out</button></div>' +
     '<p class="small muted" style="text-align:center;margin-top:16px;font-size:12px">GymPulse is for general fitness and is not medical advice. Check with your doctor before starting a new exercise or eating plan.</p>');
+  ext('afterPage', 'settings');
 }
 function pageGuide() {
   const C = (t, body) => '<div class="card"><h3 style="font-size:16px;margin-bottom:10px">' + t + '</h3>' + body + '</div>';
@@ -595,7 +742,8 @@ function pageGuide() {
     C('How hard should it feel?', '<p style="line-height:1.5">For walking or cardio, you should be able to talk but not sing. For lifting, pick a weight where the last 2 reps feel tough but never painful.</p>') +
     C('Your first weeks', '<p style="line-height:1.5">Aim for 2-3 workouts a week and go light. Adults are encouraged to work up to 150 minutes of moderate activity a week, and it\'s fine to build up slowly.</p>') +
     '<div class="card warn"><p style="line-height:1.5;font-size:14px"><b class="amber">Stay safe.</b> Stop if you feel sharp pain, dizziness or chest pain. If you have health concerns, check with your doctor before starting a new exercise program.</p></div>' +
-    '<button class="btn block" data-a="close-page" style="min-height:56px">Got it, let\'s go</button>');
+    '<div id="x-set"></div><button class="btn block" data-a="close-page" style="min-height:56px">Got it, let\'s go</button>');
+  ext('afterPage', 'guide');
 }
 async function pageRoutine() {
   const d = await GET('/api/routine'); S.routine = d.routine; S.plans = d.plans;
@@ -611,11 +759,12 @@ async function pageRoutine() {
 async function pageAdmin() {
   const us = (await GET('/api/admin/users')).users;
   setPage('<div class="head"><div class="row gap12">' + backBtn() + '<h1 class="title" style="font-size:24px">Users</h1></div><span class="badge amber">Admin</span></div>' +
-    us.map((u) => '<div class="card tight"><div class="row gap12">' + avatar(u.username) + '<div class="grow"><b>' + esc(u.username) + '</b>' + (u.id === S.me.id ? ' <span class="muted small">(you)</span>' : '') + (u.disabled ? ' <span class="badge rose">Off</span>' : '') + '<div class="small muted" style="font-size:12px">' + (u.last_workout ? 'Last workout ' + (u.last_workout === todayStr() ? 'today' : fmtDate(u.last_workout)) : 'No workouts yet') + '</div></div><span class="badge ' + (u.role === 'admin' ? 'amber' : '') + '">' + (u.role === 'admin' ? 'Admin' : 'Standard') + '</span><button class="sq" data-a="adm-menu" data-id="' + u.id + '" data-name="' + esc(u.username) + '" data-role="' + u.role + '" data-off="' + u.disabled + '" aria-label="Options">' + I('dots') + '</button></div></div>').join('') +
+    us.map((u) => '<div class="card tight"><div class="row gap12">' + avatar(u.display_name || u.username) + '<div class="grow"><b>' + esc(u.display_name || u.username) + '</b>' + (u.id === S.me.id ? ' <span class="muted small">(you)</span>' : '') + (u.disabled ? ' <span class="badge rose">Off</span>' : '') + '<div class="small muted" style="font-size:12px">' + (u.display_name ? 'Login: ' + esc(u.username) + ' · ' : '') + (u.last_workout ? 'Last workout ' + (u.last_workout === todayStr() ? 'today' : fmtDate(u.last_workout)) : 'No workouts yet') + '</div></div><span class="badge ' + (u.role === 'admin' ? 'amber' : '') + '">' + (u.role === 'admin' ? 'Admin' : 'Standard') + '</span><button class="sq" data-a="adm-menu" data-id="' + u.id + '" data-name="' + esc(u.display_name || u.username) + '" data-role="' + u.role + '" data-off="' + u.disabled + '" aria-label="Options">' + I('dots') + '</button></div></div>').join('') +
     '<div class="card"><div class="eyebrow" style="font-size:10px;margin-bottom:12px">Add a user</div><div class="two"><div class="field"><label>Username</label><input id="nu-name" autocapitalize="none" placeholder="e.g. taylor"></div><div class="field"><label>Temp password</label><input id="nu-pw" placeholder="they change it"></div></div>' +
     '<div class="row gap8"><div class="seg" style="flex:1" id="nu-role"><button class="on" data-a="nu-role" data-r="user">Standard</button><button data-a="nu-role" data-r="admin">Admin</button></div><button class="btn" style="flex:1" data-a="adm-add">Create user</button></div></div>' +
     '<div class="card good"><p style="font-size:13px;line-height:1.6"><b class="lime">Standard</b> users see only their own workouts, stats and food.<br><b class="amber">Admins</b> can also add, disable and reset users, and download backups. Admins can\'t read other people\'s weight or food.</p></div>' +
-    '<div class="card tight"><div class="row between"><div><b>Database backup</b><div class="small muted" style="font-size:12px">Nightly copies are kept in your appdata folder</div></div><a class="btn outline sm" href="/api/admin/backup" style="text-decoration:none">Download</a></div></div>');
+    '<div id="x-set"></div><div class="card tight"><div class="row between"><div><b>Database backup</b><div class="small muted" style="font-size:12px">Nightly copies are kept in your appdata folder</div></div><a class="btn outline sm" href="/api/admin/backup" style="text-decoration:none">Download</a></div></div>');
+  ext('afterPage', 'admin');
 }
 function shortcutHelp() {
   sheet('<h2 class="title" style="font-size:22px">Add the one-time Shortcut</h2><p class="sub" style="margin-bottom:14px">Takes about a minute. You only do it once.</p>' +
@@ -668,27 +817,54 @@ const actions = {
   async login() { try { await POST('/api/login', { username: val('u'), password: val('p'), remember: $('#keep') ? $('#keep').checked : true }); boot(); } catch (e) { $('#e').textContent = e.userMessage || 'Could not sign in.'; } },
   tab(el) { go(el.dataset.t); },
   'close-page'() { closePage(); go(S.tab); },
-  async 'start-workout'() { S.focus = null; await POST('/api/session/start', { date: todayStr(), plan: S.plan }); go('today'); },
-  focus(el) { S.focus = +el.dataset.id; go('today'); },
-  async 'toggle-ex'(el) {
-    const e = S.exercises.find((x) => x.id === +el.dataset.id); if (!e) return;
-    const body = e.kind === 'sets' ? { sets_done: e.completed ? 0 : e.sets_total } : { completed: !e.completed };
-    await POST('/api/session/' + S.session.id + '/exercise/' + e.id, body); S.focus = null; go('today');
+  'start-workout'() {
+    const list = S.routine.filter((r) => r.plan === S.plan); if (!list.length) return;
+    const d = { uid: S.me.id, cid: 'w' + uid8(), plan: S.plan, date: todayStr(), started_at: Math.floor(Date.now() / 1000), nextId: 1, exercises: [] };
+    list.forEach((r) => { const id = d.nextId++; d.exercises.push({ id, cid: 'e' + id, routine_id: r.id, name: r.name, kind: r.kind, sets_total: r.sets_total, sets_done: 0, completed: 0, category: r.category, note: r.note, reps: r.reps, seconds: r.seconds, logs: [], last: null, best: 0 }); });
+    S.doc = d; bindDoc(); saveDoc(); S.focus = null; go('today'); fetchLast();
   },
-  async set(el) {
-    const n = +el.dataset.n, done = +el.dataset.done, sets = n === done ? n - 1 : n;
-    const r = await POST('/api/session/' + S.session.id + '/exercise/' + el.dataset.id, { sets_done: sets });
-    const ex = r.exercises.find((e) => e.id === +el.dataset.id);
-    if (sets > done && S.profile.auto_rest && !ex.completed) startTimer(+el.dataset.secs, 'Rest · ' + el.dataset.name, { exId: ex.id });
-    else if (ex.completed) { if (timer) stopTimer(); S.focus = null; toast(el.dataset.name + ' done. Nice!'); }
+  focus(el) { S.focus = +el.dataset.id; go('today'); },
+  'toggle-ex'(el) {
+    const e = docEx(el.dataset.id); if (!e) return;
+    if (e.kind === 'sets') { e.sets_done = e.completed ? 0 : e.sets_total; e.completed = e.sets_done >= e.sets_total ? 1 : 0; } else e.completed = e.completed ? 0 : 1;
+    saveDoc(); S.focus = null; go('today');
+  },
+  set(el) {
+    const e = docEx(el.dataset.id); if (!e) return;
+    const n = +el.dataset.n, done = e.sets_done, sets = n === done ? n - 1 : n;
+    e.logs = e.logs || [];
+    if (sets > done) {
+      const w = parseFloat(val('lw')) || 0, r = parseInt(val('lr'), 10) || 0;
+      if (w > 0 || r > 0) {
+        e.logs = e.logs.filter((l) => l.set_no !== n);
+        const lg = { set_no: n, weight_lb: Math.round(w * 10) / 10, reps: r };
+        if (e.best > 0 && e1rm(w, r) > e.best + 0.05) { lg.pr = true; toast('New personal best! ' + (w ? lbs(w) + ' lb × ' : '') + r + ' \ud83c\udf89'); }
+        e.logs.push(lg);
+      }
+    } else e.logs = e.logs.filter((l) => l.set_no <= sets);
+    e.sets_done = sets; e.completed = sets >= e.sets_total ? 1 : 0;
+    saveDoc();
+    if (sets > done && S.profile.auto_rest && !e.completed) startTimer(+el.dataset.secs, 'Rest · ' + el.dataset.name, { exId: e.id });
+    else if (e.completed) { if (timer) stopTimer(); S.focus = null; toast(el.dataset.name + ' done. Nice!'); }
     go('today');
   },
   'timed-start'(el) { S.focus = +el.dataset.id; startTimer(+el.dataset.secs, el.dataset.name, { exId: +el.dataset.id, kind: 'timed' }); go('today'); },
-  async 'timed-done'(el) { await POST('/api/session/' + S.session.id + '/exercise/' + el.dataset.id, { completed: true }); stopTimer(); S.focus = null; go('today'); },
+  'timed-done'(el) { const e = docEx(el.dataset.id); if (e) { e.completed = 1; saveDoc(); } stopTimer(); S.focus = null; go('today'); },
   'sess-pause'() { const st = sessState(); if (st.pausedAt) { st.pausedMs = (st.pausedMs || 0) + Date.now() - st.pausedAt; delete st.pausedAt; } else st.pausedAt = Date.now(); sessSave(st); go('today'); },
   'test-sound'() { beep(); toast('That\'s your timer sound.'); },
-  async 'finish-workout'() { const paused = Math.round(sessPausedMs() / 1000); const id = S.session.id; await POST('/api/session/' + id + '/finish', { paused_sec: paused }); try { localStorage.removeItem(sessKey(id)); } catch (e) {} stopTimer(); S.focus = null; toast('Workout saved. Great job!'); go('progress'); },
-  async 'discard-workout'() { if (confirm('Discard this workout? It will not be saved.')) { await DEL('/api/session/' + S.session.id); stopTimer(); S.focus = null; go('today'); } },
+  async 'finish-workout'() {
+    const d = S.doc, id = S.session.id; if (!d) return;
+    d.paused_sec = Math.round(sessPausedMs() / 1000); d.ended_at = Math.floor(Date.now() / 1000);
+    try { localStorage.removeItem(sessKey(id)); } catch (e) {}
+    stopTimer(); S.focus = null; saveDoc(); bindDoc();
+    toast('Workout saved. Great job!'); go('progress'); syncNow();
+  },
+  async 'discard-workout'() {
+    if (!confirm('Discard this workout? It will not be saved.')) return;
+    const d = S.doc; S.doc = null; persistDoc(); bindDoc(); paintBanner();
+    if (d && d.session_id) { try { await DEL('/api/session/' + d.session_id, { quiet: true }); } catch (e) {} }
+    stopTimer(); S.focus = null; go('today');
+  },
   'timer-reset'() { stopTimer(); },
   'timer-adj'(el) { adjustTimer(+el.dataset.d); },
   'timer-pause'() { pauseResume(); },
@@ -706,6 +882,13 @@ const actions = {
   admin() { openPage(pageAdmin); },
   'shortcut-help'() { shortcutHelp(); },
   'pw-sheet'() { pwSheet(); },
+  async 'save-name'() {
+    try {
+      const r = await PUT('/api/account', { display_name: val('dn') });
+      S.me = r.user; toast(S.me.display_name ? 'Friends will now see "' + S.me.display_name + '".' : 'Friends will see your username.');
+      pageSettings();
+    } catch (e) { fail(e); }
+  },
   recipes() { openPage(pageRecipes, 'food'); },
   'food-day'(el) { S.foodDate = shiftDate(S.foodDate, +el.dataset.d); go('food'); },
   'open-meal'(el) { S.openMeal = S.openMeal === el.dataset.m ? null : el.dataset.m; go('food'); },
@@ -753,13 +936,26 @@ const actions = {
     const body = { name: d.name, category: d.category, kind: d.kind, sets_total: timed ? 0 : d.sets, reps: timed ? '' : d.reps, seconds: d.secs, note: d.note };
     try {
       if (exCtx.mode === 'plan') { if (exCtx.id) await PUT('/api/routine/' + exCtx.id, body); else await POST('/api/routine', Object.assign({ plan: S.plan }, body)); }
-      else { body.save_to_plan = !!($('#ex-save') && $('#ex-save').checked); if (exCtx.id) await PUT('/api/session/' + S.session.id + '/exercise/' + exCtx.id, body); else await POST('/api/session/' + S.session.id + '/exercises', body); }
+      else {
+        const toPlan = !!($('#ex-save') && $('#ex-save').checked), d = S.doc;
+        if (exCtx.id) {
+          const e = docEx(exCtx.id); const kindChanged = e.kind !== body.kind;
+          Object.assign(e, { name: body.name, category: body.category, kind: body.kind, sets_total: body.sets_total, reps: body.reps, seconds: body.seconds, note: body.note });
+          if (kindChanged) { e.sets_done = 0; e.completed = 0; e.logs = []; } else if (e.kind === 'sets') { e.sets_done = Math.min(e.sets_done, e.sets_total); e.completed = e.sets_done >= e.sets_total ? 1 : 0; }
+          if (toPlan && e.routine_id) { try { await PUT('/api/routine/' + e.routine_id, body, { quiet: true, noqueue: true }); } catch (x) {} }
+        } else {
+          const id = d.nextId++, ne = { id, cid: 'e' + id, routine_id: null, name: body.name, kind: body.kind, sets_total: body.sets_total, sets_done: 0, completed: 0, category: body.category || 'Custom', note: body.note, reps: body.reps, seconds: body.seconds, logs: [], last: null, best: 0 };
+          if (toPlan) { try { const r = await POST('/api/routine', Object.assign({ plan: S.plan }, body), { quiet: true, noqueue: true }); const nr = (r.routine || []).filter((x) => x.plan === S.plan).pop(); if (nr) ne.routine_id = nr.id; } catch (x) {} }
+          d.exercises.push(ne);
+        }
+        saveDoc();
+      }
       closeSheet(); toast(exCtx.id ? 'Saved.' : 'Added.'); refreshAfterEx();
     } catch (e) { fail(e); }
   },
   async 'ex-delete'() {
     if (!confirm(exCtx.mode === 'plan' ? 'Delete this exercise from the workout?' : 'Remove this exercise from today\'s workout?')) return;
-    try { if (exCtx.mode === 'plan') await DEL('/api/routine/' + exCtx.id); else await DEL('/api/session/' + S.session.id + '/exercise/' + exCtx.id); closeSheet(); refreshAfterEx(); } catch (e) { fail(e); }
+    try { if (exCtx.mode === 'plan') await DEL('/api/routine/' + exCtx.id); else { S.doc.exercises = S.doc.exercises.filter((x) => x.id !== exCtx.id); bindDoc(); saveDoc(); } closeSheet(); refreshAfterEx(); } catch (e) { fail(e); }
   },
   'quick-timer'() { quickTimerSheet(); },
   'qt-go'(el) { closeSheet(); startTimer(+el.dataset.s, 'Quick timer', { kind: 'quick' }); refreshAfterEx(); },
@@ -784,7 +980,7 @@ const actions = {
   async 'adm-pw'(el) { const p = prompt('New password for this person (8+ characters):'); if (p) { try { await PUT('/api/admin/users/' + el.dataset.id, { password: p }); closeSheet(); toast('Password changed.'); } catch (e) { fail(e); } } },
   async 'test-push'() { if (!S.pushOn) { toast('Turn on "Alert when rest ends" first.'); return; } try { await POST('/api/push/test'); toast('Sending in a few seconds. Lock your phone!'); } catch (e) { fail(e); } },
   async 'change-pw'() { try { await POST('/api/password', { current: val('pw-old'), new: val('pw-new') }); closeSheet(); toast('Password changed.'); } catch (e) { fail(e); } },
-  async logout() { await POST('/api/logout'); S.me = null; stopTimer(false); boot(); }
+  async logout() { await POST('/api/logout'); S.me = null; S.doc = null; clearCache(); stopTimer(false); boot(); }
 };
 document.addEventListener('click', (ev) => {
   const el = ev.target.closest('[data-a]');
@@ -807,6 +1003,7 @@ document.addEventListener('change', async (ev) => {
   } catch (e) { fail(e); }
 });
 
+window.GP = { S, actions, api, GET, POST, PUT, DEL, toast, fail, val, esc, I, IF, P, sheet, closeSheet, openPage, setPage, closePage, backBtn, go, todayStr, shiftDate, fmtDate, ago, r0, avatar, defaultMeal, debounce, ftIn, $, pad, clearCache, pollNotes, bell, rerunPage, lbs, mmss, outbox, flushOutbox };
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 boot();
 })();

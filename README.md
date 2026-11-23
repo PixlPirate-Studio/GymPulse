@@ -4,14 +4,19 @@ A self-hosted workout timer, food diary, body-stats tracker and friends feed. On
 
 ## What it does
 
-- Sign in with a username and password. The first account is the admin; the admin adds everyone else.
-- A beginner routine you can fully change. Tap sets as you finish them and the rest timer starts. Timed exercises (treadmill, elliptical) have a Start button.
-- Fully customizable workouts: make as many named workouts as you like (Leg Day, Cardio, Quick 20). Add any machine or timer with your own sets, reps, rest time or timer length, and edit or delete any of them. Add a one-off exercise in the middle of a workout, and use the Quick countdown timer for anything else.
-- Lock-screen alerts when a rest ends (Web Push, mirrors to Apple Watch).
-- Body stats in lb and ft/in: BMI, healthy weight range, daily calories, weight chart, streak and weekly CDC goals.
-- Food diary with calories and macros. Search 38 built-in foods, import the free USDA database for thousands more, look up packaged foods by barcode number (Open Food Facts), or add your own.
-- Friends: leaderboard, activity feed, cheers. Shared recipes with tips.
-- Admin tools: add people, reset passwords, turn people off, download a backup. Nightly backups are kept in your appdata folder.
+- Sign in with a username and password. The first account is the admin. The admin adds people, or sends them an **invite link** so they pick their own password.
+- Everyone can set a display name (Settings). Friends, the leaderboard, activity and recipes show the display name, never the login username.
+- A beginner routine you can fully change, with any number of named workouts. Tap sets as you finish them and the rest timer starts. Timed exercises (treadmill, elliptical) have a Start button.
+- **Weight and reps for every set**, a "last time" reminder under each exercise, and automatic **personal bests**.
+- **Works with no signal.** A workout in progress is kept on the phone and uploaded when you are back online. Weight, water, food and measurement entries made offline wait in a queue and sync later.
+- **How-to cards** for 26 common exercises (written steps, no videos), plus an "add to my workout" library.
+- Lock-screen alerts when a rest ends, and **scheduled workout reminders** (Web Push, mirrors to Apple Watch).
+- Body stats in lb and ft/in: BMI, healthy range, daily calories, weight chart, **body measurements**, **private progress photos**, streak and CDC weekly goals.
+- Food diary with calories and macros: 38 built-in foods, the free USDA database (optional import), packaged foods by **camera barcode scan** or number (Open Food Facts), your own foods, **saved meals**, **copy yesterday**, **water tracking**, and a **grocery list** you can fill from any recipe.
+- Friends: leaderboard, activity feed, **emoji reactions**, **nudges**, **challenges** (team or race), **20 badges**, and in-app notifications. Shared recipes with tips.
+- **Apple Health steps** by an iPhone Shortcut (see below).
+- Admin tools: add people, invite links, reset passwords, turn people off, download a backup. Nightly backups are kept in your appdata folder.
+- **Ready for a future phone app.** Every person runs their own server; an app only needs the server address. See `docs/NATIVE-APP.md` and `docs/API.md`.
 
 ## Put it on GitHub
 
@@ -62,14 +67,24 @@ Values are per 100 g.
 
 Push changes to GitHub, wait for the green check, then in Unraid click the container's icon → **Force update**. Your data stays in appdata.
 
+## Apple Health steps
+
+A web app cannot read Apple Health itself. Instead, in **Body → Apple Health steps → Set up** the app makes a private key and shows the exact Shortcut steps. The key can only send health numbers; it cannot read anything. You can remove it any time in Settings.
+
+## Optional: another layer of protection with Cloudflare Access
+
+Your Cloudflare tunnel makes the app reachable from the internet. GymPulse has its own login, rate limiting and secure cookies, which is enough for most people. If you want a second door, add a Cloudflare Access policy (Zero Trust → Access → Applications) for your hostname, such as "allow these email addresses". Two cautions: the iPhone home-screen app then needs you to sign in through Cloudflare as well, and a future phone app would need a bypass rule for `/api/v1/*` because it cannot do the Cloudflare web login. Start without it and add it later if you want.
+
 ## Not included yet
 
-Apple Health (a web app cannot read it; it needs a native app), progress photos, badges, personal records, per-set weights and reps, camera barcode scanning (type the number instead), a kg option, and "Easy" difficulty tags on recipes.
+Apple Watch app, a kg option, "Easy" tags on recipes, and a store-ready phone app (the server is built for one, see `docs/NATIVE-APP.md`). Lock-screen alerts need iOS 16.4+ and the Home Screen install. Safari on iPhone has no built-in barcode reader, so scanning uses a bundled one that works but can be slower than typing in dim light.
 
 ## Backups
 
-Everything lives in `/config`: `gympulse.db`, `vapid_private.pem` (alert key), `secret_key` (keeps people signed in) and `backups/`.
+Everything lives in `/config`: `gympulse.db`, `photos/` (progress photos), `vapid_private.pem` (alert key), `secret_key` (keeps people signed in) and `backups/`. The nightly backup copies the database; copy `photos/` too if you want those safe.
 
-Fonts (Inter and JetBrains Mono) are bundled in `static/fonts` under the SIL Open Font License, so the app never calls Google Fonts.
+Fonts (Inter and JetBrains Mono) are bundled in `static/fonts` under the SIL Open Font License, so the app never calls Google Fonts. The barcode reader (ZXing, Apache 2.0) is bundled in `static/vendor`.
+
+Optional setting: `GYMPULSE_SERVER_NAME` changes the name apps and invite pages show.
 
 Built from scratch for personal use. GymPulse does not contain code from other fitness apps.

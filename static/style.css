@@ -202,3 +202,37 @@ ol.plain li::marker{color:var(--lime);font-weight:800}
 
 .btn.dashed{background:rgba(17,24,39,.6);border:2px dashed var(--line);color:var(--soft);min-height:54px;margin-top:4px}
 .btn.dashed:active{border-color:var(--lime);color:var(--lime)}
+
+/* ---- v2 additions ---- */
+.offbar{pointer-events:none;position:fixed;left:0;right:0;top:0;z-index:70;background:#2b2209;color:var(--amber);border-bottom:1px solid #5b4510;text-align:center;font-size:12px;font-weight:700;padding:calc(env(safe-area-inset-top) + 6px) 12px 6px}
+.bellbtn{position:relative;flex:none}
+.bellbtn .cnt{position:absolute;top:-4px;right:-4px;min-width:18px;height:18px;border-radius:9px;background:var(--rose);color:#0B1120;font-style:normal;font-size:11px;font-weight:800;display:grid;place-items:center;padding:0 4px}
+.logbox{background:#0B1120;border:1px solid var(--border);border-radius:14px;padding:12px}
+.logbox .field label{font-size:11px}
+.lastt{font-size:12px;color:var(--cyan);margin-top:8px;font-weight:600}
+.loglist{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.logchip{font-family:var(--mono);font-size:12px;font-weight:700;padding:4px 9px;border-radius:99px;background:#17240f;color:var(--lime);border:1px solid rgba(163,230,53,.3)}
+.logchip.pr{background:#2b2209;color:var(--amber);border-color:rgba(251,191,36,.5)}
+.howto{margin-top:10px;background:none;border:0;color:var(--cyan);font-weight:700;font-size:13px;min-height:36px;padding:0;text-decoration:underline;cursor:pointer}
+.reacts{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.rx{border:1px solid var(--line);background:#111827;border-radius:99px;min-height:34px;min-width:44px;padding:0 10px;font-size:14px;font-weight:700;color:var(--soft);cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:4px}
+span.rx{cursor:default;min-height:28px}
+.rx.on{background:#17240f;border-color:rgba(163,230,53,.6);color:var(--lime)}
+.badgerow{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.bdg{width:42px;height:42px;border-radius:12px;background:#0B1120;border:1px solid var(--border);display:grid;place-items:center;font-size:22px}
+.badgegrid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.bgc{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:14px 10px;text-align:center;opacity:.45;filter:grayscale(1)}
+.bgc.on{opacity:1;filter:none;border-color:rgba(163,230,53,.4)}
+.bgc .ic2{font-size:34px;margin-bottom:6px}
+.photogrid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:12px}
+.photogrid button{border:0;padding:0;border-radius:10px;overflow:hidden;aspect-ratio:1;background:#0B1120;cursor:pointer}
+.photogrid img,.pimg{width:100%;height:100%;object-fit:cover;display:block;border-radius:10px}
+.pimg{height:auto;aspect-ratio:3/4;margin-top:4px}
+.dayp{width:22px;height:22px;border-radius:7px;background:#0B1120;color:var(--muted);font-size:11px;font-weight:800;display:grid;place-items:center}
+.dayp.on{background:var(--lime);color:#0B1120}
+.scanbox{position:relative;background:#000;border-radius:16px;overflow:hidden;aspect-ratio:4/3}
+.scanbox video{width:100%;height:100%;object-fit:cover}
+.scanbox i{position:absolute;left:12%;right:12%;top:30%;bottom:30%;border:2px solid var(--lime);border-radius:10px;box-shadow:0 0 0 999px rgba(0,0,0,.35)}
+.wrap{flex-wrap:wrap}
+
+body.hasbar #app{padding-top:calc(env(safe-area-inset-top) + 44px)}
