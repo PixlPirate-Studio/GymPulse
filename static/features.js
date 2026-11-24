@@ -327,9 +327,10 @@ actions['lib-add'] = async (el) => {
 };
 
 // ---------------------------------------------------------------- camera barcode scanner
+const PHOTO_BTN = '<button class="btn alt block" data-a="scan-photo" style="margin-top:10px">Scan from a photo</button><input type="file" id="scan-file" accept="image/*" capture="environment" hidden>';
 X.scanBtn = () => (window.isSecureContext && navigator.mediaDevices && navigator.mediaDevices.getUserMedia)
-  ? '<button class="btn alt block" data-a="scan" style="margin-top:10px">Scan with camera</button>'
-  : '<p class="small muted" style="margin-top:10px">Camera scanning turns on when you open GymPulse through a secure (https) address, like your Cloudflare tunnel. Until then, type the number.</p>';
+  ? '<button class="btn alt block" data-a="scan" style="margin-top:10px">Scan with camera</button>' + PHOTO_BTN
+  : PHOTO_BTN + '<p class="small muted" style="margin-top:10px">Camera scanning turns on when you open GymPulse through a secure (https) address, like your Cloudflare tunnel. Until then, type the number.</p>';
 let scanStream = null, scanStop = false;
 function stopScan() { scanStop = true; if (scanStream) { scanStream.getTracks().forEach((t) => t.stop()); scanStream = null; } }
 function loadZXing() {
@@ -370,8 +371,46 @@ actions.scan = async () => {
       };
       loop();
     }
-  } catch (e) { stopScan(); note('Could not use the camera. Check that you allowed it, or type the number instead.'); }
+  } catch (e) { stopScan(); note('Live camera failed (' + ((e && (e.name || e.message)) || 'unknown') + '). Close this and use "Scan from a photo" instead, or type the number.'); }
 };
 actions['scan-close'] = () => { stopScan(); closeSheet(); };
+actions['scan-photo'] = () => { const f = $('#scan-file'); if (f) { f.value = ''; f.click(); } };
+function zxHints() {
+  const Z = window.ZXing, F = Z.BarcodeFormat, h = new Map();
+  h.set(Z.DecodeHintType.POSSIBLE_FORMATS, [F.EAN_13, F.EAN_8, F.UPC_A, F.UPC_E]); h.set(Z.DecodeHintType.TRY_HARDER, true);
+  return h;
+}
+async function decodePhoto(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = new Image(); img.src = url; await img.decode();
+    await loadZXing();
+    const Z = window.ZXing;
+    for (const maxW of [1600, 1000, 700]) {
+      const sc = Math.min(1, maxW / Math.max(img.naturalWidth, img.naturalHeight));
+      for (const rot of [0, 90]) {
+        const cv = document.createElement('canvas'), w = Math.round(img.naturalWidth * sc), hh = Math.round(img.naturalHeight * sc);
+        cv.width = rot ? hh : w; cv.height = rot ? w : hh;
+        const cx = cv.getContext('2d', { willReadFrequently: true });
+        if (rot) { cx.translate(cv.width, 0); cx.rotate(Math.PI / 2); }
+        cx.drawImage(img, 0, 0, w, hh);
+        try {
+          const mf = new Z.MultiFormatReader(); mf.setHints(zxHints());
+          return mf.decodeWithState(new Z.BinaryBitmap(new Z.HybridBinarizer(new Z.HTMLCanvasElementLuminanceSource(cv)))).getText();
+        } catch (e) {}
+      }
+    }
+    return null;
+  } finally { URL.revokeObjectURL(url); }
+}
+document.addEventListener('change', async (ev) => {
+  if (!ev.target || ev.target.id !== 'scan-file' || !ev.target.files[0]) return;
+  toast('Reading the barcode...');
+  try {
+    const code = await decodePhoto(ev.target.files[0]);
+    if (!code) return toast('No barcode found. Get closer, keep it flat and sharp, or type the number.');
+    const f = $('#fbar'); if (f) f.value = code; actions.barcode();
+  } catch (e) { toast('Could not read that photo. Type the number instead.'); }
+});
 X.sheetClosed = stopScan;
 })();
