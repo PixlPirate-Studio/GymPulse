@@ -355,8 +355,19 @@ actions.scan = async () => {
       loop();
     } else {
       await loadZXing();
-      const reader = new window.ZXing.BrowserMultiFormatReader();
-      const loop = () => { if (scanStop) return; reader.decodeOnceFromVideoElement(v).then((r) => found(r.getText())).catch(() => setTimeout(loop, 150)); };
+      const Z = window.ZXing, F = Z.BarcodeFormat;
+      const hints = new Map(); hints.set(Z.DecodeHintType.POSSIBLE_FORMATS, [F.EAN_13, F.EAN_8, F.UPC_A, F.UPC_E]); hints.set(Z.DecodeHintType.TRY_HARDER, true);
+      const mf = new Z.MultiFormatReader(); mf.setHints(hints);
+      const cv = document.createElement('canvas'), cx = cv.getContext('2d', { willReadFrequently: true });
+      const loop = () => {
+        if (scanStop) return;
+        if (v.videoWidth) {
+          const w = Math.min(1024, v.videoWidth), hgt = Math.round(w * v.videoHeight / v.videoWidth);
+          cv.width = w; cv.height = hgt; cx.drawImage(v, 0, 0, w, hgt);
+          try { const r = mf.decodeWithState(new Z.BinaryBitmap(new Z.HybridBinarizer(new Z.HTMLCanvasElementLuminanceSource(cv)))); return found(r.getText()); } catch (e) {}
+        }
+        setTimeout(loop, 120);
+      };
       loop();
     }
   } catch (e) { stopScan(); note('Could not use the camera. Check that you allowed it, or type the number instead.'); }
