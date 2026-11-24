@@ -1,0 +1,47 @@
+name: Unpack update zip
+
+# Upload one .zip file to the top of the repo (works from an iPhone).
+# This unpacks it into the right folders, deletes the zip, and starts the build.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '*.zip'
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  unpack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unpack
+        run: |
+          set -e
+          shopt -s nullglob
+          zips=(*.zip)
+          [ ${#zips[@]} -gt 0 ] || { echo "No zip found"; exit 0; }
+          rm -rf /tmp/u && mkdir /tmp/u
+          for z in "${zips[@]}"; do unzip -q -o "$z" -d /tmp/u; done
+          src=$(dirname "$(find /tmp/u -name app.py -not -path '*/tests/*' | head -n 1)")
+          echo "Source folder: $src"
+          # copy everything except the .github folder (GitHub does not let this job change workflow files)
+          rsync -a --exclude '.github' "$src"/ ./
+          git rm -q -f -- "${zips[@]}"
+
+      - name: Commit
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add -A
+          git commit -m "Unpack update" || echo "Nothing changed"
+          git push
+
+      - name: Start the build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run build.yml --ref main
