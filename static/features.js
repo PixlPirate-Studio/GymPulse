@@ -34,7 +34,7 @@ X.feedRow = function (e) {
   const mine = e.user_id === S.me.id;
   const badge = e.type === 'pr' ? '📈 ' : e.type === 'badge' ? '🏅 ' : e.type === 'challenge' ? '🏁 ' : '';
   const reacts = mine
-    ? (e.reactions && e.reactions.length ? '<div class="reacts">' + e.reactions.map((r) => '<span class="rx">' + r.emoji + ' ' + r.count + '</span>').join('') + '</div>' : '')
+    ? '<div class="reacts">' + (e.reactions || []).map((r) => '<span class="rx">' + r.emoji + ' ' + r.count + '</span>').join('') + '<button class="linkbtn" data-a="feed-del" data-id="' + e.id + '">Delete post</button></div>'
     : '<div class="reacts">' + EMOJIS.map((em) => {
       const c = (e.reactions || []).find((r) => r.emoji === em);
       return '<button class="rx' + (e.mine === em ? ' on' : '') + '" data-a="react" data-id="' + e.id + '" data-e="' + em + '" aria-label="React ' + em + '">' + em + (c ? ' ' + c.count : '') + '</button>';
@@ -45,6 +45,7 @@ X.feedRow = function (e) {
 };
 X.nudge = function (f) { return '<button class="btn outline sm" data-a="nudge" data-id="' + f.id + '">Nudge</button>'; };
 actions.react = async (el) => { try { await POST('/api/feed/' + el.dataset.id + '/react', { emoji: el.dataset.e }); go('friends'); } catch (e) { fail(e); } };
+actions['feed-del'] = async (el) => { if (confirm('Remove this post from the activity feed?')) { await DEL('/api/feed/' + el.dataset.id); go('friends'); } };
 actions.nudge = async (el) => { try { await POST('/api/friends/' + el.dataset.id + '/nudge'); toast('Nudge sent!'); } catch (e) { fail(e); } };
 
 // ---------------------------------------------------------------- notifications
@@ -188,8 +189,11 @@ async function bodyExtras() {
   const d = hl.days;
   h += card('<div class="row between"><div><h3 style="margin:0;font-size:16px">Apple Health steps</h3><div class="small muted" style="font-size:12px">' + (d.length ? 'Last sync ' + fmtDate(d[0].date) : 'Send your steps with an iPhone Shortcut') + '</div></div><button class="btn alt sm" data-a="health-setup">' + (d.length ? 'Setup' : 'Set up') + '</button></div>' +
     (d.length ? '<div class="row gap6" style="margin-top:10px;align-items:flex-end;height:60px">' + (function () { const mx = Math.max.apply(null, d.map((x) => x.steps || 0).concat([1])); return d.slice().reverse().map((x) => '<div style="flex:1;text-align:center"><div style="background:var(--cyan);border-radius:4px;height:' + Math.max(3, (x.steps || 0) / mx * 44) + 'px"></div><div class="small muted" style="font-size:10px">' + new Date(x.date + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'narrow' }) + '</div></div>').join(''); })() + '</div>' : ''));
+  const ws = (await GET('/api/weights')).weights.slice(-8).reverse();
+  if (ws.length) h += card(eyebrow('Recent weigh-ins') + ws.map((w) => '<div class="entry" style="padding:6px 0"><div class="grow">' + fmtDate(w.date) + '</div><b class="mono lime">' + w.weight_lb + ' lb</b><button class="sq" style="width:34px;height:34px;color:var(--rose);margin-left:8px" data-a="weigh-del" data-d="' + w.date + '" aria-label="Delete weigh-in">\u00d7</button></div>').join(''));
   slot('x-bot', h);
 }
+actions['weigh-del'] = async (el) => { if (confirm('Delete this weigh-in?')) { await DEL('/api/weight/' + el.dataset.d); go('body'); } };
 actions['meas-new'] = () => sheet('<h2 class="title" style="font-size:22px">Log measurements</h2><p class="sub" style="margin-bottom:14px">In inches. Fill in only the ones you want.</p>' +
   '<div class="two"><div class="field"><label>Waist</label><input id="m-waist" class="inputmono" type="number" inputmode="decimal"></div><div class="field"><label>Hips</label><input id="m-hips" class="inputmono" type="number" inputmode="decimal"></div></div>' +
   '<div class="two"><div class="field"><label>Chest</label><input id="m-chest" class="inputmono" type="number" inputmode="decimal"></div><div class="field"><label>Arm</label><input id="m-arm" class="inputmono" type="number" inputmode="decimal"></div></div>' +
@@ -323,7 +327,9 @@ actions['lib-add'] = async (el) => {
 };
 
 // ---------------------------------------------------------------- camera barcode scanner
-X.scanBtn = () => '<button class="btn alt block" data-a="scan" style="margin-top:10px">Scan with camera</button>';
+X.scanBtn = () => (window.isSecureContext && navigator.mediaDevices && navigator.mediaDevices.getUserMedia)
+  ? '<button class="btn alt block" data-a="scan" style="margin-top:10px">Scan with camera</button>'
+  : '<p class="small muted" style="margin-top:10px">Camera scanning turns on when you open GymPulse through a secure (https) address, like your Cloudflare tunnel. Until then, type the number.</p>';
 let scanStream = null, scanStop = false;
 function stopScan() { scanStop = true; if (scanStream) { scanStream.getTracks().forEach((t) => t.stop()); scanStream = null; } }
 function loadZXing() {
@@ -356,5 +362,5 @@ actions.scan = async () => {
   } catch (e) { stopScan(); note('Could not use the camera. Check that you allowed it, or type the number instead.'); }
 };
 actions['scan-close'] = () => { stopScan(); closeSheet(); };
-document.addEventListener('click', (ev) => { if (ev.target && ev.target.id === 'sheet') stopScan(); });
+X.sheetClosed = stopScan;
 })();

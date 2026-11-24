@@ -126,11 +126,12 @@ function sheet(html) {
   closeSheet();
   const m = document.createElement('div');
   m.className = 'modal'; m.id = 'sheet';
-  m.innerHTML = '<div class="sheet">' + html + '</div>';
+  const hasForm = /<input|<textarea|<select/.test(html), own = /data-a="scan-close"/.test(html);
+  m.innerHTML = '<div class="sheet">' + html + (own ? '' : '<button class="btn alt block" data-a="close-sheet" style="margin-top:12px">' + (hasForm ? 'Cancel' : 'Close') + '</button>') + '</div>';
   m.addEventListener('click', (e) => { if (e.target === m) closeSheet(); });
   document.body.appendChild(m);
 }
-function closeSheet() { const m = $('#sheet'); if (m) m.remove(); }
+function closeSheet() { const m = $('#sheet'); if (m) m.remove(); if (window.GPX && window.GPX.sheetClosed) window.GPX.sheetClosed(); }
 
 // full pages that slide over the tab content (the tab bar stays visible)
 function openPage(fn, tabHighlight) {
@@ -614,12 +615,13 @@ async function runFoodSearch() {
   box.innerHTML = r.foods.length ? r.foods.map(foodRow).join('') : '<p class="muted small" style="margin:6px 0 14px">Nothing found. Try another word, or create your own food below.</p>';
 }
 const SRC = { usda: ['USDA', 'cyan'], off: ['Packaged', 'amber'], custom: ['Mine', 'lime'] };
-const foodRow = (f) => { const b = SRC[f.source]; return '<div class="res" data-a="pick-food" data-id="' + f.id + '" data-name="' + esc(f.name) + '" data-serving="' + esc(f.serving) + '" data-cal="' + f.calories + '" style="cursor:pointer"><div class="grow"><div class="nm">' + esc(f.name) + '</div><div class="meta">' + esc(f.serving) + ' · <b>' + r0(f.calories) + ' cal</b> · ' + r0(f.protein) + 'g protein</div>' + (b || f.brand ? '<div style="margin-top:6px">' + (b ? '<span class="badge ' + b[1] + '">' + b[0] + '</span> ' : '') + (f.brand && f.brand !== 'USDA' ? '<span class="small muted">' + esc(f.brand) + '</span>' : '') + '</div>' : '') + '</div><div class="sq lime" style="width:48px;height:48px;border-radius:14px">' + I('plus') + '</div></div>'; };
+const foodRow = (f) => { const b = SRC[f.source]; return '<div class="res" data-a="pick-food" data-id="' + f.id + '" data-name="' + esc(f.name) + '" data-serving="' + esc(f.serving) + '" data-cal="' + f.calories + '" data-own="' + (f.owner_id && S.me && f.owner_id === S.me.id ? 1 : '') + '" style="cursor:pointer"><div class="grow"><div class="nm">' + esc(f.name) + '</div><div class="meta">' + esc(f.serving) + ' · <b>' + r0(f.calories) + ' cal</b> · ' + r0(f.protein) + 'g protein</div>' + (b || f.brand ? '<div style="margin-top:6px">' + (b ? '<span class="badge ' + b[1] + '">' + b[0] + '</span> ' : '') + (f.brand && f.brand !== 'USDA' ? '<span class="small muted">' + esc(f.brand) + '</span>' : '') + '</div>' : '') + '</div><div class="sq lime" style="width:48px;height:48px;border-radius:14px">' + I('plus') + '</div></div>'; };
 function pickFood(el) {
   const d = el.dataset;
   sheet('<h2 class="title" style="font-size:22px">' + esc(d.name) + '</h2><p class="sub" style="margin-bottom:14px">' + esc(d.serving) + ' = ' + r0(d.cal) + ' cal</p>' +
     '<div class="field"><label>How many servings?</label><input id="srv" class="inputmono" type="number" step="0.25" inputmode="decimal" value="1"></div>' +
-    '<button class="btn block" data-a="confirm-food" data-id="' + d.id + '">Add to ' + esc(addCtx.meal) + '</button>');
+    '<button class="btn block" data-a="confirm-food" data-id="' + d.id + '">Add to ' + esc(addCtx.meal) + '</button>' +
+    (d.own ? '<button class="btn danger block" style="margin-top:10px" data-a="food-del" data-id="' + d.id + '">Delete this food</button>' : ''));
 }
 function customFoodSheet() {
   sheet('<h2 class="title" style="font-size:22px">Create your own food</h2><p class="sub" style="margin-bottom:14px">Copy these numbers from the nutrition label.</p>' +
@@ -664,7 +666,7 @@ async function pageRecipe(id) {
   if (r.calories) h += '<div class="card"><div class="eyebrow" style="font-size:10px;margin-bottom:8px">Per serving</div><div class="row between" style="text-align:center"><div style="flex:1"><div class="mono lime" style="font-size:24px;font-weight:800">' + r0(r.calories) + '</div><div class="small muted">cal</div></div><div style="flex:1"><div class="mono cyan" style="font-size:24px;font-weight:800">' + r0(r.protein) + 'g</div><div class="small muted">protein</div></div><div style="flex:1"><div class="mono lime" style="font-size:24px;font-weight:800">' + r0(r.carbs) + 'g</div><div class="small muted">carbs</div></div><div style="flex:1"><div class="mono amber" style="font-size:24px;font-weight:800">' + r0(r.fat) + 'g</div><div class="small muted">fat</div></div></div></div>';
   if (r.ingredients) h += '<div class="card"><h3>What you need</h3><div style="line-height:1.7">' + lines(r.ingredients).map((x) => '<div>' + x + '</div>').join('') + '</div></div>';
   if (r.steps) h += '<div class="card"><h3>How to make it</h3><ol class="plain">' + lines(r.steps).map((x) => '<li>' + x + '</li>').join('') + '</ol></div>';
-  d.tips.forEach((t) => { h += '<div class="card good tight"><b class="lime">' + esc(t.username) + ':</b> ' + esc(t.text) + ' <span class="muted">· ' + ago(t.created_at) + '</span></div>'; });
+  d.tips.forEach((t) => { h += '<div class="card good tight"><b class="lime">' + esc(t.username) + ':</b> ' + esc(t.text) + ' <span class="muted">· ' + ago(t.created_at) + '</span>' + (r.mine || t.user_id === S.me.id ? ' <button class="linkbtn" data-a="tip-del" data-id="' + t.id + '" data-rid="' + r.id + '">Delete</button>' : '') + '</div>'; });
   h += '<div class="row gap8" style="margin-bottom:12px"><input id="tip" placeholder="Share a tip (a swap or a shortcut)"><button class="btn alt" data-a="tip-send" data-id="' + r.id + '">Send</button></div>';
   const meal = defaultMeal();
   h += ext('recipeExtra', r) + '<div class="row gap8">' + (r.calories ? '<button class="btn" style="flex:1;min-height:56px" data-a="recipe-log-go" data-id="' + r.id + '" data-meal="' + meal + '">Add 1 serving to ' + meal + '</button>' : '<div style="flex:1"></div>') +
@@ -705,7 +707,7 @@ async function viewHistory() {
     const live = !s.ended_at, full = s.total && s.done >= s.total;
     const when = s.date === td ? 'Today' : fmtDate(s.date);
     const time = live ? new Date(s.started_at * 1000).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : r0((s.duration_sec || 0) / 60) + ' min';
-    return '<div class="card tight" style="' + (live ? 'border-color:var(--cyan)' : '') + '"><div class="row between"><div><b>' + when + ' · ' + time + '</b><div class="small muted" style="margin-top:2px">' + (live ? 'Your routine · ' + s.done + ' of ' + s.total + ' done' : s.done + ' of ' + s.total + ' exercises · ' + s.sets + ' sets') + '</div></div><span class="badge ' + (live ? 'cyan' : full ? 'lime' : 'amber') + '">' + (live ? 'Live' : full ? 'Complete' : 'Partial') + '</span></div></div>';
+    return '<div class="card tight" style="' + (live ? 'border-color:var(--cyan)' : '') + '"><div class="row between"><div><b>' + when + ' · ' + time + '</b><div class="small muted" style="margin-top:2px">' + (live ? 'Your routine · ' + s.done + ' of ' + s.total + ' done' : s.done + ' of ' + s.total + ' exercises · ' + s.sets + ' sets') + '</div></div><span class="badge ' + (live ? 'cyan' : full ? 'lime' : 'amber') + '">' + (live ? 'Live' : full ? 'Complete' : 'Partial') + '</span>' + (live ? '' : '<button class="sq" style="width:36px;height:36px;color:var(--rose);margin-left:8px" data-a="hist-del" data-id="' + s.id + '" aria-label="Delete this workout">\u00d7</button>') + '</div></div>';
   }).join('') : '<div class="card muted">Finish your first workout and it will show up here.</div>';
   setApp(h);
 }
@@ -900,6 +902,10 @@ const actions = {
   async 'del-entry'(el) { await DEL('/api/diary/' + el.dataset.id); go('food'); },
   async barcode() { const c = val('fbar').replace(/\s/g, ''); try { const r = await GET('/api/foods/barcode/' + c); $('#fres').innerHTML = foodRow(r.food); $('#fres').scrollIntoView({ behavior: 'smooth' }); } catch (e) { fail(e); } },
   'custom-food'() { customFoodSheet(); },
+  'close-sheet'() { closeSheet(); },
+  async 'tip-del'(el) { if (confirm('Delete this tip?')) { await DEL('/api/recipes/' + el.dataset.rid + '/tips/' + el.dataset.id); pageRecipe(el.dataset.rid); } },
+  async 'food-del'(el) { if (confirm('Delete this food? Past diary entries keep their numbers.')) { await DEL('/api/foods/' + el.dataset.id); closeSheet(); toast('Food deleted.'); if (typeof runFoodSearch === 'function') runFoodSearch(); } },
+  async 'hist-del'(el) { if (confirm('Delete this workout from your history?')) { await DEL('/api/session/' + el.dataset.id); toast('Workout deleted.'); go('history'); } },
   async 'save-custom'() {
     try {
       const r = await POST('/api/foods', { name: val('cf-name'), serving: val('cf-serv'), calories: val('cf-cal'), protein: val('cf-pro'), carbs: val('cf-carb'), fat: val('cf-fat') });

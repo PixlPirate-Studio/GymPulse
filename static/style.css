@@ -236,3 +236,5 @@ span.rx{cursor:default;min-height:28px}
 .wrap{flex-wrap:wrap}
 
 body.hasbar #app{padding-top:calc(env(safe-area-inset-top) + 44px)}
+.linkbtn{background:none;border:0;color:var(--rose);font-weight:700;font-size:12px;min-height:32px;padding:0 6px;cursor:pointer;text-decoration:underline}
+.btn.danger{background:#2a1015;color:var(--rose);border:1px solid rgba(251,113,133,.4)}

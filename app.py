@@ -36,8 +36,9 @@ import workouts_plus
 import social_plus
 import food_plus
 import guide
+import tidy
 
-MODULES = [api_tokens, workouts_plus, social_plus, food_plus, guide]
+MODULES = [api_tokens, workouts_plus, social_plus, food_plus, guide, tidy]
 
 APP_VERSION = "1.0.0"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -1006,6 +1007,8 @@ def create_app():
     @app.delete("/api/session/<int:sid>")
     @login_required()
     def api_session_discard(sid):
+        # Deleting a workout also removes its posts from the activity feed.
+        db().execute("DELETE FROM events WHERE ref_id=? AND user_id=? AND type IN ('workout','pr')", (sid, g.user["id"]))
         db().execute("DELETE FROM sessions WHERE id=? AND user_id=?", (sid, g.user["id"]))
         db().commit()
         return jsonify({"ok": True})
@@ -1371,7 +1374,7 @@ def create_app():
         r = one("SELECT * FROM recipes WHERE id=?", (rid,))
         if not r or not can_see_recipe(r):
             return err("Recipe not found.", 404)
-        tips = rows("SELECT t.id, t.text, t.created_at, COALESCE(NULLIF(u.display_name,''), u.username) AS username FROM recipe_tips t JOIN users u ON u.id=t.user_id "
+        tips = rows("SELECT t.id, t.user_id, t.text, t.created_at, COALESCE(NULLIF(u.display_name,''), u.username) AS username FROM recipe_tips t JOIN users u ON u.id=t.user_id "
                     "WHERE t.recipe_id=? ORDER BY t.id", (rid,))
         return jsonify({"recipe": recipe_card(r), "tips": tips})
 

@@ -8,7 +8,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py api_tokens.py workouts_plus.py social_plus.py food_plus.py guide.py import_usda.py ./
+COPY app.py api_tokens.py workouts_plus.py social_plus.py food_plus.py guide.py tidy.py import_usda.py ./
 COPY static ./static
 
 RUN mkdir -p /config

@@ -73,3 +73,46 @@ def test_health_endpoint_with_shortcut_token(app):
     day = c.get("/api/health").get_json()["days"][0]
     assert day["steps"] == 4200 and day["resting_hr"] == 61
     assert anon.get("/api/v1/health", headers=hd).status_code == 401   # shortcut token can only send
+
+
+def test_cleanup_deletes(app):
+    c = client(app); setup_admin(c)
+    # weigh-in
+    c.post("/api/weight", json={"weight_lb": 180, "date": "2026-02-01"}, headers=H)
+    c.delete("/api/weight/2026-02-01", headers=H)
+    assert c.get("/api/weights").get_json()["weights"] == []
+    # own food, past diary entry keeps its numbers
+    f = c.post("/api/foods", json={"name": "Mom's soup", "calories": 200}, headers=H).get_json()["food"]
+    c.post("/api/diary", json={"food_id": f["id"], "meal": "lunch", "servings": 1, "date": "2026-02-01"}, headers=H)
+    other = add_user(c, "sam")
+    assert other.delete("/api/foods/%d" % f["id"], headers=H).status_code == 404
+    assert c.delete("/api/foods/%d" % f["id"], headers=H).status_code == 200
+    assert c.get("/api/diary", query_string={"date": "2026-02-01"}).get_json()["entries"][0]["calories"] == 200
+    assert c.delete("/api/foods/1", headers=H).status_code == 404       # built-in foods are not deletable
+    # tips: author or recipe owner only
+    rid = c.post("/api/recipes", json={"title": "Soup", "ingredients": "water", "shared": True}, headers=H).get_json()
+    rid = rid.get("id") or c.get("/api/recipes").get_json()["recipes"][0]["id"]
+    c.post("/api/friends/request", json={"username": "admin"}, headers=dict(H))  # no-op for admin
+    other.post("/api/friends/request", json={"username": "admin"}, headers=H)
+    fid = c.get("/api/friends").get_json()["incoming"][0]["id"]
+    c.post("/api/friends/%d/accept" % fid, headers=H)
+    other.post("/api/recipes/%d/tips" % rid, json={"text": "Add salt"}, headers=H)
+    tid = c.get("/api/recipes/%d" % rid).get_json()["tips"][0]["id"]
+    third = add_user(c, "zed")
+    assert third.delete("/api/recipes/%d/tips/%d" % (rid, tid), headers=H).status_code == 404
+    assert c.delete("/api/recipes/%d/tips/%d" % (rid, tid), headers=H).status_code == 200   # recipe owner
+    assert c.get("/api/recipes/%d" % rid).get_json()["tips"] == []
+    # deleting a finished workout also removes its feed post; own feed posts can be deleted
+    s = c.post("/api/session/start", json={}, headers=H).get_json()
+    ex = [e for e in s["exercises"] if e["kind"] == "sets"][0]
+    c.post("/api/session/%d/exercise/%d" % (s["session"]["id"], ex["id"]), json={"sets_done": 1}, headers=H)
+    c.post("/api/session/%d/finish" % s["session"]["id"], json={}, headers=H)
+    assert any(e["type"] == "workout" for e in c.get("/api/feed").get_json()["events"])
+    c.delete("/api/session/%d" % s["session"]["id"], headers=H)
+    assert not any(e["type"] == "workout" for e in c.get("/api/feed").get_json()["events"])
+    ev = [e for e in c.get("/api/feed").get_json()["events"] if e["user_id"] == 1]
+    if ev:
+        assert other.delete("/api/feed/%d" % ev[0]["id"], headers=H).status_code == 200   # not theirs: nothing happens
+        assert any(e["id"] == ev[0]["id"] for e in c.get("/api/feed").get_json()["events"])
+        c.delete("/api/feed/%d" % ev[0]["id"], headers=H)
+        assert not any(e["id"] == ev[0]["id"] for e in c.get("/api/feed").get_json()["events"])
