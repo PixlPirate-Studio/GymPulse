@@ -35,6 +35,9 @@ const P = {
   dots: 'M12 6h.01M12 12h.01M12 18h.01',
   tick: 'M5 13l4 4L19 7',
   chev: 'M15 19l-7-7 7-7',
+  dumb: 'M6.5 6.5v11M17.5 6.5v11M3.5 9v6M20.5 9v6M6.5 12h11',
+  sun: 'M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4L7 17M17 7l1.4-1.4M12 8a4 4 0 100 8 4 4 0 000-8z',
+  moon: 'M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z',
   edit: 'M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z'
 };
 const I = (n, extra) => '<svg class="ic ' + (extra || '') + '" viewBox="0 0 24 24" aria-hidden="true"><path d="' + P[n] + '"/></svg>';
@@ -43,7 +46,7 @@ const PLAY = 'M8 5v14l11-7z', PAUSE = 'M6 4h4v16H6V4zm8 0h4v16h-4V4z';
 const HEART = 'M12 21s-7-4.5-9.5-9A5.5 5.5 0 0112 6a5.5 5.5 0 019.5 6C19 16.5 12 21 12 21z';
 const FLAME = 'M12 2c1 4-3 5-3 9a3 3 0 006 0c0-1-.3-1.8-1-2.7 3 1.2 5 4 5 7.2a7 7 0 11-14 0c0-5 4-6.5 7-13.5z';
 
-const S = { me: null, tab: 'today', foodDate: todayStr(), friendView: 'board', histMonth: todayStr().slice(0, 7), profile: null, stats: null, session: null, exercises: [], routine: [], focus: null, plans: [], plan: (function () { try { return localStorage.getItem('gp_plan') || null; } catch (e) { return null; } })(), pushOn: false, recipeFilter: 'all', openMeal: null, pageFn: null, doc: null, offline: false, notes: 0 };
+const S = { me: null, tab: 'today', foodDate: todayStr(), friendView: 'board', histMonth: todayStr().slice(0, 7), profile: null, stats: null, session: null, exercises: [], routine: [], focus: null, plans: [], plan: (function () { try { return localStorage.getItem('gp_plan') || null; } catch (e) { return null; } })(), pushOn: false, recipeFilter: 'all', openMeal: null, tr: { level: 0, minutes: 30 }, pageFn: null, doc: null, offline: false, notes: 0 };
 const ext = (n, ...a) => ((window.GPX && window.GPX[n]) ? window.GPX[n](...a) : '');
 let timer = null;
 try { timer = JSON.parse(localStorage.getItem('gp_timer') || 'null'); } catch (e) { timer = null; }
@@ -183,8 +186,20 @@ function renderAuth(setup) {
   $('#u').addEventListener('keydown', enter); $('#p').addEventListener('keydown', enter);
 }
 
+// ---------- light / dark ----------
+function curTheme() { return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark'; }
+function applyTheme(t) {
+  document.documentElement.setAttribute('data-theme', t);
+  document.body.classList.toggle('light-strip', t === 'light');
+  const m = document.querySelector('meta[name=theme-color]'); if (m) m.content = t === 'light' ? '#F4F5F1' : '#090D16';
+  try { localStorage.setItem('gp_theme', t); } catch (e) {}
+  document.querySelectorAll('.themebtn').forEach((b) => { b.outerHTML = themeBtn(); });
+}
+const themeBtn = () => '<button class="sq themebtn" data-a="theme" aria-label="' + (curTheme() === 'light' ? 'Switch to dark mode' : 'Switch to light mode') + '">' + I(curTheme() === 'light' ? 'moon' : 'sun') + '</button>';
+
 // ---------- notifications ----------
 const bell = () => '<button class="sq bellbtn" data-a="notes" aria-label="Notifications">' + I('bell') + (S.notes ? '<i class="cnt">' + (S.notes > 9 ? '9+' : S.notes) + '</i>' : '') + '</button>';
+const tools = () => '<div class="hdr-right">' + themeBtn() + bell() + '</div>';
 function paintBell() { document.querySelectorAll('.bellbtn').forEach((b) => { b.outerHTML = bell(); }); }
 async function pollNotes() {
   if (!S.me || document.hidden) return;
@@ -200,33 +215,37 @@ async function pollNotes() {
 setInterval(pollNotes, 60000);
 
 // ---------- navigation ----------
-const TABS = [['today', 'clock', 'Today'], ['food', 'food', 'Food'], ['progress', 'progress', 'Progress'], ['friends', 'friends', 'Friends'], ['body', 'body', 'Body'], ['history', 'history', 'History']];
+const TABS = [['today', 'clock', 'Today'], ['train', 'dumb', 'Train'], ['food', 'food', 'Food'], ['friends', 'friends', 'Friends'], ['me', 'body', 'Me']];
+const ME_SUB = ['progress', 'body', 'history'];
 function buildNav() {
   const n = $('#nav');
   n.innerHTML = '<div class="in">' + TABS.map((t) => '<button data-a="tab" data-t="' + t[0] + '" id="nav-' + t[0] + '">' + I(t[1]) + t[2] + '</button>').join('') + '</div>';
   n.hidden = false;
 }
-function highlight(tab) { TABS.forEach((t) => { const b = $('#nav-' + t[0]); if (b) b.classList.toggle('on', t[0] === tab); }); }
+function highlight(tab) { TABS.forEach((t) => { const b = $('#nav-' + t[0]); if (b) b.classList.toggle('on', t[0] === tab || (t[0] === 'me' && ME_SUB.indexOf(tab) >= 0)); }); }
 function go(tab) {
   const p = $('#page'); if (p) { p.remove(); S.pageFn = null; }
   S.tab = tab; highlight(tab);
   window.scrollTo(0, 0);
-  const fn = { today: viewToday, food: viewFood, progress: viewProgress, friends: viewFriends, body: viewBody, history: viewHistory }[tab];
+  const fn = { today: viewToday, train: viewTrain, food: viewFood, progress: viewProgress, friends: viewFriends, me: viewMe, body: viewBody, history: viewHistory }[tab];
   fn().then(() => ext('after', tab)).catch((e) => { if (e.message !== 'signed out') { $('#app').innerHTML = '<div class="card">Something went wrong loading this page. <button class="btn sm" data-a="reload">Reload</button></div>'; } });
 }
+function rerenderTrain() { const y = window.scrollY; viewTrain().then(() => window.scrollTo(0, y)).catch(() => {}); }
 const setApp = (h) => { $('#app').innerHTML = h; };
 
 // ---------- timers ----------
 function saveTimer() { try { if (timer) localStorage.setItem('gp_timer', JSON.stringify(timer)); else localStorage.removeItem('gp_timer'); } catch (e) {} }
+function restNote(seconds, label, endAt) {
+  if (!(S.profile && S.profile.rest_note)) return null;
+  let t = ''; try { t = new Date(endAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); } catch (e) {}
+  const len = seconds >= 60 ? Math.floor(seconds / 60) + ':' + String(seconds % 60).padStart(2, '0') + ' min' : seconds + ' sec';
+  return { title: 'Back at ' + t, body: (label || 'Rest') + ' · ' + len };
+}
 function startTimer(seconds, label, opts) {
   opts = opts || {};
   timer = { endAt: Date.now() + seconds * 1000, total: seconds, label: label || 'Rest', exId: opts.exId || null, kind: opts.kind || 'rest', paused: false, alerted: false };
   saveTimer();
-  POST('/api/timer', { seconds, title: (label || 'Rest') + ' is over', body: opts.kind === 'timed' ? 'Nice work. Tap to log it.' : opts.kind === 'quick' ? 'Your timer is done.' : 'Time to get going again.' }).catch(() => {});
-  if (S.profile && S.profile.apple_timer && !opts.noShortcut) {
-    const name = encodeURIComponent(S.profile.shortcut_name || 'GymPulse Timer');
-    setTimeout(() => { window.location.href = 'shortcuts://run-shortcut?name=' + name + '&input=text&text=' + Math.round(seconds); }, 150);
-  }
+  POST('/api/timer', { seconds, title: (label || 'Rest') + ' is over', body: opts.kind === 'timed' ? 'Nice work. Tap to log it.' : opts.kind === 'quick' ? 'Your timer is done.' : 'Time to get going again.', start_note: restNote(seconds, label, timer.endAt) }).catch(() => {});
   ensureTick();
   const slot = $('#rest-slot'); if (slot) slot.innerHTML = timerPanel();
 }
@@ -240,7 +259,7 @@ function adjustTimer(delta) {
   const left = Math.max(0, (timer.paused ? timer.leftMs : timer.endAt - Date.now()) / 1000) + delta;
   const secs = Math.max(5, left);
   if (timer.paused) { timer.leftMs = secs * 1000; saveTimer(); paintTimer(true); return; }
-  startTimer(secs, timer.label, { exId: timer.exId, kind: timer.kind, noShortcut: true });
+  startTimer(secs, timer.label, { exId: timer.exId, kind: timer.kind });
 }
 function pauseResume() {
   if (!timer) return;
@@ -342,7 +361,19 @@ async function loadToday() {
   bindDoc();
   if (S.doc && S.doc.dirty) syncSoon();
   if (S.plans.indexOf(S.plan) < 0) setPlan(S.plans[0]);
+  await loadGuide();
 }
+const nrm = (x) => String(x || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+let GUIDE = null;
+async function loadGuide() { if (GUIDE) return; try { GUIDE = (await GET('/api/exercise-guide', { quiet: true })).cards; } catch (e) {} }
+function slugFor(name) {
+  const n = nrm(name); if (!n || !GUIDE || !window.GPAnim) return null;
+  let c = GUIDE.find((x) => n === nrm(x.name) || (x.aliases || []).some((a) => nrm(a) === n));
+  if (!c) c = GUIDE.find((x) => [x.name].concat(x.aliases || []).some((a) => { a = nrm(a); return a.length > 4 && (n.indexOf(a) >= 0 || a.indexOf(n) >= 0); }));
+  return c && window.GPAnim.has(c.slug) ? c.slug : null;
+}
+const thumbFor = (name) => { const sl = slugFor(name); return sl ? window.GPAnim.thumb(sl, { name, animate: false }) : '<div class="athumb"><span class="muted" style="font-size:22px">' + I('dumb') + '</span></div>'; };
+const planMin = (list) => Math.round(list.reduce((a, r) => a + (r.kind === 'timed' ? (r.seconds || 300) : (r.sets_total || 3) * (45 + (r.seconds || 75))), 0) / 60);
 const docEx = (id) => (S.doc ? S.doc.exercises.find((x) => x.id === +id) : null);
 const e1rm = (w, r) => (w > 0 && r > 0 ? w * (1 + r / 30) : 0);
 async function fetchLast() {
@@ -375,7 +406,7 @@ function setLogBlock(e) {
     '<div class="field" style="margin:0;flex:1"><label>Weight (lb)</label><input id="lw" class="inputmono" type="number" inputmode="decimal" step="0.5" min="0" placeholder="0" value="' + esc(w === 0 ? '' : w) + '"></div>' +
     '<div class="field" style="margin:0;flex:1"><label>Reps</label><input id="lr" class="inputmono" type="number" inputmode="numeric" min="0" placeholder="0" value="' + esc(r === 0 ? '' : r) + '"></div></div>' + lastLine(e);
   if (logs.length) h += '<div class="loglist">' + logs.slice().sort((a, b) => a.set_no - b.set_no).map((l) => '<span class="logchip' + (l.pr ? ' pr' : '') + '">' + (l.pr ? '★ ' : '') + 'Set ' + l.set_no + ': ' + (l.weight_lb ? lbs(l.weight_lb) + ' lb × ' : '') + l.reps + '</span>').join('') + '</div>';
-  return h + '<button class="howto" data-a="howto" data-name="' + esc(e.name) + '">How to do this</button></div>';
+  return h + (slugFor(e.name) ? '' : '<button class="howto" data-a="howto" data-name="' + esc(e.name) + '">How to do this</button>') + '</div>';
 }
 
 async function viewToday() {
@@ -384,16 +415,27 @@ async function viewToday() {
   let h = '';
   if (!s) {
     const list = S.routine.filter((r) => r.plan === S.plan);
-    h += '<div class="head"><div><h1 class="title">Today</h1><p class="sub">' + esc(motivation(p)) + '</p></div>' + bell() + '</div>';
+    const [dy, wt] = await Promise.all([GET('/api/diary?date=' + todayStr(), { quiet: true }).catch(() => null), GET('/api/water?date=' + todayStr(), { quiet: true }).catch(() => null)]);
+    const first = (S.me.display_name || S.me.username || '').split(' ')[0];
+    h += '<div class="head"><div><h1 class="title">Hi, ' + esc(first) + '</h1><p class="sub">' + esc(motivation(p)) + '</p></div>' + tools() + '</div>';
     if (S.doc && S.doc.ended_at) h += '<div class="card hi tight small">Your last workout is saved on this phone and will upload as soon as you are online.</div>';
     if (isIOS() && !isStandalone()) h += '<div class="card hi tight"><b>Install GymPulse on your iPhone</b><div class="small muted" style="margin-top:4px">Tap the Share button in Safari, then "Add to Home Screen". It opens full screen and can buzz you when a rest is over.</div></div>';
-    h += '<div class="row between">' + startLink() + streakPill(p.streak) + '</div>';
-    h += '<div id="rest-slot">' + (timer ? timerPanel() : '') + '</div>' + planChips();
-    list.forEach((r, i) => {
-      h += '<div class="exc"><div class="row gap12" style="min-width:0"><div class="cbox"></div><div style="min-width:0"><div class="eyebrow" style="font-size:10px">#' + (i + 1) + ' · ' + esc(r.category || 'Exercise') + '</div><div style="font-size:16px;font-weight:800">' + esc(r.name) + '</div><div class="small muted">' + exSub(r) + '</div></div></div>' + exPencil('plan', r.id) + '</div>';
-    });
-    if (!list.length) h += '<div class="card muted">This workout is empty. Add your first exercise below.</div>';
-    h += addButtons('plan') + '<div class="spacer"></div><button class="btn block" data-a="start-workout"' + (list.length ? '' : ' disabled') + ' style="min-height:56px;font-size:16px">Start ' + esc(S.plan) + '</button>';
+    h += '<div id="rest-slot">' + (timer ? timerPanel() : '') + '</div>';
+    if (list.length) {
+      const gs = []; list.forEach((r) => { const sl = slugFor(r.name); if (sl) window.GPAnim.groups(sl).forEach((g) => { if (gs.indexOf(g) < 0) gs.push(g); }); });
+      const gsorted = (window.GPAnim ? window.GPAnim.order : gs).filter((g) => gs.indexOf(g) >= 0);
+      h += '<div class="hero"><div class="eyebrow">Today\'s workout</div><h2>' + esc(S.plan) + '</h2><div class="hs">' + list.length + ' exercises · about ' + planMin(list) + ' min</div>' +
+        '<div class="hp">' + gsorted.map((g) => '<span>' + esc(g) + '</span>').join('') + '</div><button class="hbtn" data-a="start-workout">Start workout</button><button class="hlink" data-a="plan-open">See the exercises or change workout</button></div>';
+    } else {
+      h += '<div class="hero empty"><div class="eyebrow">Today\'s workout</div><h2>Pick a workout</h2><div class="hs muted">Tell us how long you have and we will plan it for you.</div><div style="height:14px"></div><button class="hbtn" data-a="tab" data-t="train">Plan my workout</button></div>';
+    }
+    const names = ['M', 'T', 'W', 'T', 'F', 'S', 'S'], goal = p.workouts_per_week || 3;
+    h += '<div class="card"><div class="row between" style="margin-bottom:12px"><b style="font-size:15px">This week</b><span class="small muted" style="font-weight:600">' + p.week.workouts + ' of ' + goal + (p.streak > 0 ? ' · ' + p.streak + '-day streak' : '') + '</span></div><div class="weekrow">' +
+      p.week.days.map((d, i) => '<div class="wd"><b class="' + (d.worked ? 'on' : '') + (d.date === todayStr() ? ' today' : '') + '">' + (d.worked ? I('check') : '') + '</b>' + names[i] + '</div>').join('') + '</div></div>';
+    h += '<div class="minis">';
+    if (dy) { const left = dy.goals.calories - dy.totals.calories; h += '<div class="mini" data-a="tab" data-t="food" style="cursor:pointer"><div class="eyebrow" style="font-size:10px">Food</div><div class="n">' + r0(Math.abs(left)).toLocaleString() + ' <small>cal ' + (left < 0 ? 'over' : 'left') + '</small></div><div class="pb"><i style="width:' + Math.min(100, dy.totals.calories / dy.goals.calories * 100) + '%"></i></div></div>'; }
+    if (wt) h += '<div class="mini"><div class="row between"><div class="eyebrow" style="font-size:10px">Water</div><button class="linkbtn" data-a="water-quick" style="font-weight:700">+8 oz</button></div><div class="n">' + r0(wt.oz) + ' <small>of ' + wt.goal_oz + ' oz</small></div><div class="pb c"><i style="width:' + Math.min(100, wt.oz / wt.goal_oz * 100) + '%"></i></div></div>';
+    h += '</div><button class="btn dashed block" data-a="quick-timer" style="min-height:48px">' + I('clock') + ' Quick countdown timer</button>';
     setApp(h); ensureTick(); return;
   }
 
@@ -418,6 +460,8 @@ async function viewToday() {
       h += '<div class="exc cur"><div class="row gap12" style="align-items:flex-start"><button class="cbox' + (e.completed ? ' on' : '') + '" style="margin-top:2px" data-a="toggle-ex" data-id="' + e.id + '" aria-label="Mark done">' + (e.completed ? I('check') : '') + '</button><div class="grow" style="min-width:0">' +
         '<div class="row gap6"><span class="badge">#' + (i + 1) + (x.cat ? ' · ' + esc(x.cat) : '') + '</span>' + (running ? '<span class="badge cyan">Running</span>' : '') + '</div>' +
         '<h3 style="margin:5px 0 0;font-size:18px;font-weight:800;line-height:1.2">' + esc(e.name) + '</h3><p class="small soft" style="margin-top:3px;font-size:13px">' + exSub(e) + '</p>' + (x.note ? '<p class="small muted" style="margin-top:2px;font-size:12px">' + esc(x.note) + '</p>' : '') + '</div>' + exPencil('session', e.id) + '</div>';
+      const csl = slugFor(e.name);
+      if (csl) h += '<div class="cursfig">' + window.GPAnim.stage(csl, { name: e.name }) + '</div><button class="howlink" data-a="howto" data-name="' + esc(e.name) + '">How to do this ' + I('next').replace('class="ic ', 'style="width:14px;height:14px" class="ic ') + '</button>';
       if (e.kind === 'sets') {
         h += '<div class="setrow">';
         for (let n = 1; n <= e.sets_total; n++) h += '<button class="setbtn' + (n <= e.sets_done ? ' on' : '') + '" data-a="set" data-id="' + e.id + '" data-n="' + n + '" data-done="' + e.sets_done + '" data-secs="' + x.secs + '" data-name="' + esc(e.name) + '">' + (n <= e.sets_done ? I('check') : '<span class="o"></span>') + 'Set ' + n + '</button>';
@@ -431,7 +475,7 @@ async function viewToday() {
       }
       h += '</div>';
     } else {
-      h += '<div class="exc' + (e.completed ? ' done' : '') + '" data-a="focus" data-id="' + e.id + '" style="cursor:pointer"><div class="row gap12" style="min-width:0"><button class="cbox' + (e.completed ? ' on' : '') + '" data-a="toggle-ex" data-id="' + e.id + '" aria-label="Toggle done">' + (e.completed ? I('check') : '') + '</button><div style="min-width:0"><div class="eyebrow" style="font-size:10px">#' + (i + 1) + (x.cat ? ' · ' + esc(x.cat) : '') + '</div>' +
+      h += '<div class="exc' + (e.completed ? ' done' : '') + '" data-a="focus" data-id="' + e.id + '" style="cursor:pointer"><div class="row gap12" style="min-width:0"><button class="cbox' + (e.completed ? ' on' : '') + '" data-a="toggle-ex" data-id="' + e.id + '" aria-label="Toggle done">' + (e.completed ? I('check') : '') + '</button>' + thumbFor(e.name) + '<div style="min-width:0"><div class="eyebrow" style="font-size:10px">#' + (i + 1) + (x.cat ? ' · ' + esc(x.cat) : '') + '</div>' +
         '<div style="font-size:16px;font-weight:800">' + esc(e.name) + '</div><div class="small muted">' + (e.completed ? 'done · ' : '') + exSub(e) + '</div></div></div>' +
         '<div class="row gap6">' + (e.kind === 'timed' && !e.completed ? '<button class="btn sm" data-a="timed-start" data-id="' + e.id + '" data-secs="' + x.secs + '" data-name="' + esc(e.name) + '">' + IF(PLAY) + 'Start</button>' : '') + exPencil('session', e.id) + '</div></div>';
     }
@@ -494,6 +538,44 @@ function motivation(p) {
   return 'A short workout still counts. Let\'s get your first one in this week.';
 }
 
+// ---------- Train (pick level + length) ----------
+const LVL_TXT = [['Just starting', 'Mostly machines, light weight and extra rest. 2 sets each.'], ['Getting comfortable', 'Machines and free weights. 3 sets, a little less rest.'], ['Ready for more', 'More free weights and bodyweight moves. Shorter rests.']];
+const exMeta = (e) => e.kind === 'timed' ? mmss(e.seconds) + ' timer' : e.sets_total + ' sets of ' + esc(e.reps);
+async function viewTrain() {
+  await loadToday();
+  const t = S.tr;
+  const pv = await GET('/api/programs/preview?level=' + t.level + '&minutes=' + t.minutes);
+  let h = '<div class="head"><div><h1 class="title">Train</h1><p class="sub">Pick your level and how long you have.</p></div>' + tools() + '</div>';
+  if (S.session) h += '<div class="card hi tight"><div class="row between"><div><b>Workout in progress</b><div class="small muted">' + esc(S.session.plan || '') + '</div></div><button class="btn sm" data-a="tab" data-t="today">Resume</button></div></div>';
+  h += '<div class="eyebrow" style="margin:6px 0 10px">1 · Your level</div>';
+  LVL_TXT.forEach((l, i) => { h += '<button class="lvl' + (t.level === i ? ' on' : '') + '" data-a="train-level" data-v="' + i + '"><span class="rd">' + (t.level === i ? I('check') : '') + '</span><span><b>' + l[0] + '</b><span class="d">' + l[1] + '</span></span></button>'; });
+  h += '<div class="eyebrow" style="margin:16px 0 10px">2 · How long at the gym?</div><div class="lens">' + [20, 30, 45, 60].map((m) => '<button class="' + (t.minutes === m ? 'on' : '') + '" data-a="train-len" data-v="' + m + '">' + m + '<small>min</small></button>').join('') + '</div>';
+  h += '<div class="card"><div class="sumrow"><div><b>' + pv.count + '</b><span>exercises</span></div><div><b>~' + pv.est_min + '</b><span>minutes</span></div><div><b>' + pv.sets + '</b><span>sets each</span></div></div><div class="cov">' + pv.groups.map((g) => '<span>' + esc(g) + '</span>').join('') + '</div></div>';
+  h += '<div class="eyebrow" style="margin:6px 0 10px">Your plan</div>';
+  pv.exercises.forEach((e) => {
+    const sl = e.slug && window.GPAnim && window.GPAnim.has(e.slug) ? e.slug : null, gs = sl ? window.GPAnim.groups(sl) : [];
+    h += '<div class="xrow" data-a="lib-open" data-slug="' + e.slug + '">' + (sl ? window.GPAnim.thumb(sl, { name: e.name, animate: false }) : '<div class="athumb"></div>') + '<div class="grow" style="min-width:0"><b>' + esc(e.name) + '</b><div class="xm">' + exMeta(e) + '</div>' + (gs.length ? '<div class="xf">' + esc(gs.join(' · ')) + '</div>' : '') + '</div>' + I('next', 'go') + '</div>';
+  });
+  h += '<p class="small muted" style="font-size:12px;line-height:1.5;margin:4px 0 12px">Time is an estimate. Rest times and sets are simple beginner picks, not medical advice. Start light and stop if anything hurts.</p>';
+  h += '<button class="btn block" data-a="train-build" style="min-height:56px;font-size:16px">Use this workout</button>';
+  const mine = S.plans.map((n) => ({ n, list: S.routine.filter((r) => r.plan === n) }));
+  h += '<div class="eyebrow" style="margin:22px 0 10px">My workouts</div>' + mine.map((m) => '<div class="card tight"><div class="row between gap8"><div style="min-width:0"><b>' + esc(m.n) + '</b><div class="small muted">' + m.list.length + ' exercises · about ' + planMin(m.list) + ' min</div></div><div class="row gap6"><button class="btn alt sm" data-a="plan-edit" data-p="' + esc(m.n) + '">Edit</button><button class="btn sm" data-a="plan-start" data-p="' + esc(m.n) + '"' + (m.list.length && !S.session ? '' : ' disabled') + '>Start</button></div></div></div>').join('');
+  h += '<button class="btn alt block" data-a="lib" style="margin-top:6px">Browse all exercises</button>';
+  setApp(h);
+}
+
+async function viewMe() {
+  const [prof, prog] = await Promise.all([GET('/api/profile'), GET('/api/progress?today=' + todayStr())]);
+  S.profile = prof.profile; S.stats = prof.stats;
+  const row = (ic, t, sub, a, extra) => '<button class="xrow" data-a="' + a + '"' + (extra || '') + '><div class="athumb" style="width:44px;height:44px;border-radius:12px;color:var(--lime)">' + I(ic) + '</div><div class="grow" style="min-width:0"><b>' + t + '</b><div class="xm">' + sub + '</div></div>' + I('next', 'go') + '</button>';
+  let h = '<div class="head"><div class="row gap12">' + avatar(S.me.name) + '<div><h1 class="title" style="font-size:24px">' + esc(S.me.name) + '</h1><p class="sub">' + (S.me.role === 'admin' ? 'Admin · ' : '') + 'Login: ' + esc(S.me.username) + '</p></div></div>' + tools() + '</div>';
+  h += '<div class="tiles"><div class="tile"><div class="n amber">' + prog.streak + '</div><div class="t">day streak</div></div><div class="tile"><div class="n lime">' + prog.week.workouts + '/' + (prog.workouts_per_week || 3) + '</div><div class="t">this week</div></div><div class="tile"><div class="n cyan">' + prog.total_sessions + '</div><div class="t">sessions</div></div></div>';
+  h += row('progress', 'Progress', 'Weight chart and weekly goals', 'tab" data-t="progress') + row('body', 'Body &amp; goals', 'Height, weight and your daily calories', 'tab" data-t="body') + row('history', 'History', 'Past workouts on a calendar', 'tab" data-t="history');
+  h += '<div class="eyebrow" style="margin:16px 0 10px">Workouts</div>' + row('edit', 'My workouts', 'Rename, reorder or edit exercises', 'routine') + row('dumb', 'Exercise library', 'Animated how-to for every move', 'lib') + row('clock', 'Start here', 'Gym words and how hard it should feel', 'guide');
+  h += '<div class="eyebrow" style="margin:16px 0 10px">App</div>' + row('gear', 'Settings', 'Alerts, reminders, password' + (S.me.role === 'admin' ? ', users' : ''), 'settings');
+  setApp(h);
+}
+
 // ---------- Progress ----------
 function weightChart(ws, healthyMax, goal) {
   if (ws.length < 2) return '<p class="muted small" style="margin-top:10px">Log your weight a few times on the Body tab and your chart will show up here.</p>';
@@ -503,10 +585,10 @@ function weightChart(ws, healthyMax, goal) {
   const x = (i) => L + (W - L - R) * (i / (ws.length - 1)); const y = (v) => T + (H - T - B) * (1 - (v - lo) / (hi - lo));
   const pts = ws.map((p, i) => x(i).toFixed(1) + ',' + y(p.weight_lb).toFixed(1)).join(' ');
   let s = '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" role="img" aria-label="Weight over time" style="margin-top:10px">';
-  for (let v = lo; v <= hi; v += 10) s += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + y(v) + '" y2="' + y(v) + '" stroke="#1E293B"/><text x="2" y="' + (y(v) + 4) + '" fill="#94A3B8" font-size="11" font-family="JetBrains Mono,monospace">' + v + '</text>';
-  if (healthyMax) s += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + y(healthyMax) + '" y2="' + y(healthyMax) + '" stroke="#FBBF24" stroke-dasharray="5 4"/><text x="' + (W - R) + '" y="' + (y(healthyMax) - 6) + '" fill="#FBBF24" font-size="11" font-weight="600" text-anchor="end">Healthy range tops out at ' + r0(healthyMax) + '</text>';
-  s += '<polyline fill="none" stroke="#A3E635" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" points="' + pts + '"/>';
-  s += '<circle cx="' + x(ws.length - 1) + '" cy="' + y(ws[ws.length - 1].weight_lb) + '" r="5" fill="#A3E635"/></svg>';
+  for (let v = lo; v <= hi; v += 10) s += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + y(v) + '" y2="' + y(v) + '" style="stroke:var(--border)"/><text x="2" y="' + (y(v) + 4) + '" style="fill:var(--muted)" font-size="11" font-family="JetBrains Mono,monospace">' + v + '</text>';
+  if (healthyMax) s += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + y(healthyMax) + '" y2="' + y(healthyMax) + '" style="stroke:var(--amber)" stroke-dasharray="5 4"/><text x="' + (W - R) + '" y="' + (y(healthyMax) - 6) + '" style="fill:var(--amber)" font-size="11" font-weight="600" text-anchor="end">Healthy range tops out at ' + r0(healthyMax) + '</text>';
+  s += '<polyline fill="none" style="stroke:var(--acc)" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" points="' + pts + '"/>';
+  s += '<circle cx="' + x(ws.length - 1) + '" cy="' + y(ws[ws.length - 1].weight_lb) + '" r="5" style="fill:var(--acc)"/></svg>';
   return s;
 }
 function journeyMessage(prog) {
@@ -529,7 +611,7 @@ async function viewProgress() {
   const w = prog.week, goal = prog.workouts_per_week || 3, td = todayStr(), st = prog.stats;
   const names = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
   const ws = prog.weights, last = ws.length ? ws[ws.length - 1].weight_lb : null, delta = ws.length > 1 ? last - ws[0].weight_lb : 0;
-  let h = '<div class="head"><div><h1 class="title">Progress</h1><p class="sub">Last 12 weeks</p></div></div>';
+  let h = '<button class="howlink" data-a="tab" data-t="me">' + I('back') + ' Me</button><div class="head"><div><h1 class="title">Progress</h1><p class="sub">Last 12 weeks</p></div></div>';
   h += '<div class="tiles"><div class="tile"><div class="n amber">' + prog.streak + '</div><div class="t">day streak</div></div><div class="tile"><div class="n lime">' + w.workouts + '/' + goal + '</div><div class="t">this week</div></div><div class="tile"><div class="n cyan">' + prog.total_sessions + '</div><div class="t">sessions</div></div></div>';
   h += '<div class="card"><div class="row between"><h3 style="margin:0;font-size:16px">This week</h3><div class="days">' + w.days.map((d, i) => '<b class="' + (d.worked ? 'on ' : '') + (d.date === td ? 'today' : '') + '">' + names[i] + '</b>').join('') + '</div></div><div class="spacer"></div>' +
     '<div class="row between small" style="margin-bottom:6px"><span class="soft">Active minutes</span><span class="mono lime" style="font-weight:700">' + w.minutes + ' / 150</span></div><div class="bar8"><i style="width:' + Math.min(100, w.minutes / 150 * 100) + '%"></i></div><div class="spacer"></div>' +
@@ -554,7 +636,7 @@ async function viewBody() {
   S.profile = prof.profile; S.stats = prof.stats;
   const p = prof.profile, st = prof.stats, last = ws.weights.length ? ws.weights[ws.weights.length - 1].weight_lb : '';
   const ft = p.height_in ? Math.floor(p.height_in / 12) : '', inch = p.height_in ? Math.round(p.height_in % 12) : '';
-  let h = '<div class="head"><div><h1 class="title">Body &amp; goals</h1><p class="sub">Your numbers power every estimate in the app</p></div><button class="sq" data-a="settings" aria-label="Settings">' + I('gear') + '</button></div>';
+  let h = '<button class="howlink" data-a="tab" data-t="me">' + I('back') + ' Me</button><div class="head"><div><h1 class="title">Body &amp; goals</h1><p class="sub">Your numbers power every estimate in the app</p></div><button class="sq" data-a="settings" aria-label="Settings">' + I('gear') + '</button></div>';
   h += '<div class="two"><div class="field"><label>Age</label><input id="b-age" class="inputmono" type="number" inputmode="numeric" value="' + esc(p.age || '') + '"></div><div class="field"><label>Sex (for formulas)</label><select id="b-sex" style="font-weight:700"><option value="">Choose</option><option value="female"' + (p.sex === 'female' ? ' selected' : '') + '>Female</option><option value="male"' + (p.sex === 'male' ? ' selected' : '') + '>Male</option></select></div></div>';
   h += '<div class="two"><div class="field"><label>Height</label><div class="row gap6"><input id="b-ft" class="inputmono" type="number" inputmode="numeric" placeholder="ft" value="' + esc(ft) + '"><input id="b-in" class="inputmono" type="number" inputmode="numeric" placeholder="in" value="' + esc(inch) + '"></div></div><div class="field"><label>Weight today</label><input id="b-wt" class="inputmono" type="number" inputmode="decimal" step="0.1" placeholder="lb" value="' + esc(last) + '"></div></div>';
   h += '<div class="two"><div class="field"><label>Goal weight</label><input id="b-goal" class="inputmono" type="number" inputmode="decimal" placeholder="lb" value="' + esc(p.goal_weight_lb || '') + '"></div><div class="field"><label>Activity level</label><select id="b-act" style="font-weight:700">' + ACT.map((a) => '<option value="' + a[0] + '"' + (p.activity === a[0] ? ' selected' : '') + '>' + a[1] + '</option>').join('') + '</select></div></div>';
@@ -576,9 +658,9 @@ async function viewFood() {
   const t = d.totals, g = d.goals, left = g.calories - t.calories, pct = Math.min(1, t.calories / g.calories), C = 2 * Math.PI * 54;
   const todayDone = (prog.week.days.find((x) => x.date === todayStr()) || {}).worked;
   const workout = (act.session || (S.doc && !S.doc.ended_at)) ? ['in progress', 'cyan'] : todayDone ? ['done', 'lime'] : ['not yet', 'muted'];
-  let h = '<div class="head"><div><h1 class="title">Food</h1><p class="sub">' + foodTitle(S.foodDate) + '</p></div><div class="row gap8"><button class="btn outline" style="min-height:44px;padding:0 16px" data-a="recipes">Recipes</button><button class="btn" style="min-height:44px;padding:0 14px" data-a="add-food" data-meal="' + defaultMeal() + '">' + I('plus') + ' Add food</button></div></div>';
+  let h = '<div class="head"><div><h1 class="title">Food</h1><p class="sub">' + foodTitle(S.foodDate) + '</p></div><div class="hdr-right">' + themeBtn() + '<button class="btn" style="min-height:44px;padding:0 14px" data-a="add-food" data-meal="' + defaultMeal() + '">' + I('plus') + ' Add food</button></div></div>';
   h += '<div id="x-top"></div><div class="row between" style="margin-bottom:12px"><button class="sq" data-a="food-day" data-d="-1" aria-label="Previous day">' + I('back') + '</button><span class="small muted" style="font-weight:600">' + (S.foodDate === todayStr() ? 'Today' : fmtDate(S.foodDate)) + '</span><button class="sq" data-a="food-day" data-d="1" aria-label="Next day">' + I('next') + '</button></div>';
-  h += '<div class="card"><div class="row gap12"><div class="ring"><svg width="130" height="130" viewBox="0 0 130 130"><circle cx="65" cy="65" r="54" stroke="#1E293B" stroke-width="14" fill="none"/><circle cx="65" cy="65" r="54" stroke="' + (left < 0 ? '#FB7185' : '#A3E635') + '" stroke-width="14" fill="none" stroke-linecap="round" stroke-dasharray="' + (C * pct).toFixed(1) + ' ' + C.toFixed(1) + '"/></svg><div class="mid"><div class="mono" style="font-size:28px;font-weight:800">' + r0(Math.abs(left)) + '</div><div class="small muted" style="font-size:12px">cal ' + (left < 0 ? 'over' : 'left') + '</div></div></div>' +
+  h += '<div class="card"><div class="row gap12"><div class="ring"><svg width="130" height="130" viewBox="0 0 130 130"><circle cx="65" cy="65" r="54" style="stroke:var(--raise)" stroke-width="14" fill="none"/><circle cx="65" cy="65" r="54" style="stroke:' + (left < 0 ? 'var(--rose)' : 'var(--acc)') + '" stroke-width="14" fill="none" stroke-linecap="round" stroke-dasharray="' + (C * pct).toFixed(1) + ' ' + C.toFixed(1) + '"/></svg><div class="mid"><div class="mono" style="font-size:28px;font-weight:800">' + r0(Math.abs(left)) + '</div><div class="small muted" style="font-size:12px">cal ' + (left < 0 ? 'over' : 'left') + '</div></div></div>' +
     '<div class="grow"><div class="row between small" style="margin-bottom:6px"><span class="muted">Daily goal</span><b class="mono">' + g.calories.toLocaleString() + '</b></div><div class="row between small" style="margin-bottom:6px"><span class="muted">Food eaten</span><b class="mono lime">' + r0(t.calories).toLocaleString() + '</b></div><div class="row between small" style="margin-bottom:8px"><span class="muted">Workout today</span><b class="mono ' + workout[1] + '">' + workout[0] + '</b></div>' +
     '<div class="muted" style="font-size:11px;line-height:1.4">' + (g.personalized && S.stats.stay_cal ? 'Goal = the ~' + S.stats.stay_cal.toLocaleString() + ' cal to stay the same weight' + (S.stats.goal_cal < S.stats.stay_cal ? ', minus 500, to lose about 1 lb a week.' : S.stats.goal_cal > S.stats.stay_cal ? ', plus 300, to gain slowly.' : '.') : 'Add your body stats on the Body tab for a personal goal.') + '</div></div></div></div>';
   h += '<div class="card">' + [['Protein', t.protein, g.protein, 'cyan'], ['Carbs', t.carbs, g.carbs, 'lime'], ['Fat', t.fat, g.fat, 'amber']].map((m) => '<div class="macro"><div class="t"><span>' + m[0] + '</span><span class="mono ' + m[3] + '" style="font-size:12px">' + r0(m[1]) + ' / ' + m[2] + ' g</span></div><div class="bar8 ' + (m[3] === 'lime' ? '' : m[3]) + '"><i style="width:' + Math.min(100, m[1] / m[2] * 100) + '%"></i></div></div>').join('') + '</div>';
@@ -588,7 +670,7 @@ async function viewFood() {
       '<button class="sq' + (es.length ? '' : ' lime') + '" data-a="add-food" data-meal="' + m + '" aria-label="Add to ' + m + '" style="width:48px;height:48px">' + I('plus') + '</button></div>' +
       (open ? es.map((e) => '<div class="entry"><div class="grow"><div style="font-weight:600">' + esc(e.name) + '</div><div class="small muted">' + e.servings + ' × ' + esc(e.serving) + '</div></div><div class="mono" style="font-weight:700">' + r0(e.calories) + '</div><button class="sq" data-a="del-entry" data-id="' + e.id + '" aria-label="Remove" style="width:36px;height:36px;color:var(--rose)">' + I('dots').replace('<path d="' + P.dots + '"/>', '<path d="M6 6l12 12M18 6L6 18"/>') + '</button></div>').join('') : '') + '</div>';
   });
-  h += '<div id="x-bot"></div>';
+  h += '<button class="btn outline block" data-a="recipes" style="margin-bottom:12px">Recipes from you and your friends</button><div id="x-bot"></div>';
   setApp(h);
 }
 function defaultMeal() { const h = new Date().getHours(); return h < 10 ? 'breakfast' : h < 15 ? 'lunch' : h < 21 ? 'dinner' : 'snacks'; }
@@ -600,7 +682,7 @@ async function pageAddFood(meal) {
     '<div class="row gap8" style="margin-bottom:12px"><input id="fq" placeholder="Search foods, like banana or chicken" autocomplete="off" value="' + esc(addCtx.q) + '"><button class="sq cyan" data-a="barcode-toggle" aria-label="Barcode" style="width:56px;height:48px">' + I('barcode') + '</button></div>' +
     '<div class="seg" style="margin-bottom:12px">' + [['all', 'All'], ['recent', 'Recent'], ['mine', 'My foods']].map((s) => '<button data-a="fscope" data-s="' + s[0] + '" class="' + (addCtx.scope === s[0] ? 'on' : '') + '">' + s[1] + '</button>').join('') + '</div>' +
     '<div id="fres"></div>' +
-    '<div class="card hi" id="barcard"><div class="row gap12"><div class="sq cyan dark" style="width:48px;height:48px;background:#0c2733;color:var(--cyan);border-color:#155e75">' + I('barcode') + '</div><div><b>Look up a barcode</b><div class="small muted" style="font-size:12px">Type the number printed under the barcode to fill in the label from Open Food Facts.</div></div></div>' +
+    '<div class="card hi" id="barcard"><div class="row gap12"><div class="sq cyan dark" style="width:48px;height:48px;background:var(--cyanbg2);color:var(--cyan);border-color:var(--cyan)">' + I('barcode') + '</div><div><b>Look up a barcode</b><div class="small muted" style="font-size:12px">Type the number printed under the barcode to fill in the label from Open Food Facts.</div></div></div>' +
     '<div class="row gap8" style="margin-top:12px"><input id="fbar" inputmode="numeric" placeholder="Barcode number"><button class="btn cyan" data-a="barcode">Look up</button></div>' + ext('scanBtn') + '</div>' +
     '<button class="btn alt block" data-a="custom-food" style="min-height:52px">Can\'t find it? Create your own food</button>');
   $('#fq').addEventListener('input', debounce(() => { addCtx.q = val('fq'); runFoodSearch(); }, 250));
@@ -642,7 +724,7 @@ async function pageRecipes() {
     const tag = x.mine ? '<span class="badge">Yours</span>' : x.protein >= 30 ? '<span class="badge cyan">High protein</span>' : x.minutes > 0 && x.minutes <= 15 ? '<span class="badge amber">Quick</span>' : '';
     h += '<div class="card"><div class="row between" style="align-items:flex-start;gap:10px"><div><h3 style="font-size:17px;margin:0;line-height:1.25">' + esc(x.title) + '</h3><div class="small muted" style="margin-top:3px">by ' + (x.mine ? esc(x.owner) + ' (you)' : esc(x.owner)) + (x.minutes ? ' · ' + x.minutes + ' min' : '') + '</div></div>' + tag + '</div>' +
       '<div class="small" style="margin:10px 0"><b class="mono lime">' + r0(x.calories) + '</b> cal &nbsp; <b class="mono cyan">' + r0(x.protein) + 'g</b> protein <span class="muted"> per serving</span></div>' +
-      '<div class="row gap8"><button class="btn' + (i === 0 && !x.mine ? '' : ' alt') + '" style="flex:1" data-a="recipe-open" data-id="' + x.id + '">View recipe</button>' + (x.mine ? '<button class="btn alt" data-a="recipe-edit" data-id="' + x.id + '">Edit</button>' : '<button class="btn alt" data-a="recipe-heart" data-id="' + x.id + '" style="' + (x.cheered ? 'color:var(--lime);border-color:rgba(163,230,53,.5);background:#17240f' : '') + '">' + IF(HEART) + x.cheers + '</button>') + '</div></div>';
+      '<div class="row gap8"><button class="btn' + (i === 0 && !x.mine ? '' : ' alt') + '" style="flex:1" data-a="recipe-open" data-id="' + x.id + '">View recipe</button>' + (x.mine ? '<button class="btn alt" data-a="recipe-edit" data-id="' + x.id + '">Edit</button>' : '<button class="btn alt" data-a="recipe-heart" data-id="' + x.id + '" style="' + (x.cheered ? 'color:var(--lime);border-color:rgba(163,230,53,.5);background:var(--limebg)' : '') + '">' + IF(HEART) + x.cheers + '</button>') + '</div></div>';
   });
   setPage(h);
 }
@@ -670,7 +752,7 @@ async function pageRecipe(id) {
   h += '<div class="row gap8" style="margin-bottom:12px"><input id="tip" placeholder="Share a tip (a swap or a shortcut)"><button class="btn alt" data-a="tip-send" data-id="' + r.id + '">Send</button></div>';
   const meal = defaultMeal();
   h += ext('recipeExtra', r) + '<div class="row gap8">' + (r.calories ? '<button class="btn" style="flex:1;min-height:56px" data-a="recipe-log-go" data-id="' + r.id + '" data-meal="' + meal + '">Add 1 serving to ' + meal + '</button>' : '<div style="flex:1"></div>') +
-    '<button class="sq" data-a="recipe-cheer" data-id="' + r.id + '" style="width:56px;height:56px;' + (r.cheered ? 'color:var(--lime);border-color:rgba(163,230,53,.5);background:#17240f' : '') + '" aria-label="Save">' + IF(HEART) + '</button></div>';
+    '<button class="sq" data-a="recipe-cheer" data-id="' + r.id + '" style="width:56px;height:56px;' + (r.cheered ? 'color:var(--lime);border-color:rgba(163,230,53,.5);background:var(--limebg)' : '') + '" aria-label="Save">' + IF(HEART) + '</button></div>';
   if (r.mine) h += '<div class="row gap8" style="margin-top:12px"><button class="btn alt" style="flex:1" data-a="recipe-edit" data-id="' + r.id + '">Edit</button><button class="btn danger" style="flex:1" data-a="recipe-del" data-id="' + r.id + '">Delete</button></div>';
   setPage(h);
 }
@@ -678,14 +760,14 @@ async function pageRecipe(id) {
 // ---------- Friends ----------
 async function viewFriends() {
   const [lb, fr, ev] = await Promise.all([GET('/api/leaderboard?today=' + todayStr()), GET('/api/friends'), GET('/api/feed')]);
-  let h = '<div class="head"><div><h1 class="title">Friends</h1><p class="sub">Show up for each other</p></div>' + bell() + '</div><div id="x-top"></div>';
+  let h = '<div class="head"><div><h1 class="title">Friends</h1><p class="sub">Show up for each other</p></div>' + tools() + '</div><div id="x-top"></div>';
   h += '<div class="row gap8" style="margin-bottom:12px"><input id="fr-name" autocapitalize="none" autocorrect="off" placeholder="Add a friend by their name"><button class="btn" data-a="friend-add" style="min-height:48px">Add</button></div>';
   fr.incoming.forEach((x) => { h += '<div class="card hi tight"><div class="row gap12">' + avatar(x.username) + '<div class="grow"><b>' + esc(x.username) + '</b> wants to connect</div><button class="btn sm" data-a="friend-accept" data-id="' + x.id + '">Accept</button><button class="btn alt sm" data-a="friend-ignore" data-id="' + x.id + '">Ignore</button></div></div>'; });
   fr.outgoing.forEach((x) => { h += '<div class="card tight"><div class="row gap12">' + avatar(x.username) + '<div class="grow small muted">Waiting for <b class="soft">' + esc(x.username) + '</b> to accept</div><button class="btn alt sm" data-a="friend-ignore" data-id="' + x.id + '">Cancel</button></div></div>'; });
   h += '<div class="card"><div class="row between" style="margin-bottom:6px"><h3 style="margin:0;font-size:16px">This week</h3><span class="small muted" style="font-size:12px">Workouts · streak</span></div>' + lb.leaders.map((u, i) => '<div class="lbrow' + (u.me ? ' me' : '') + '"><span class="rank' + (i === 0 ? ' first' : '') + '">' + (i + 1) + '</span>' + avatar(u.username) + '<div class="grow"><b>' + esc(u.username) + '</b>' + (u.me ? ' <span class="muted small">(you)</span>' : '') + '</div><span class="mono lime" style="font-weight:700;font-size:13px">' + u.workouts + ' · ' + u.streak + 'd</span></div>').join('') + (lb.leaders.length < 2 ? '<p class="small muted" style="margin-top:8px">Add a friend to see how you stack up.</p>' : '') + '</div>';
   h += '<div class="eyebrow" style="margin:18px 0 10px">Activity</div>';
   h += ev.events.length ? ev.events.map((e) => ext('feedRow', e) || '<div class="card tight"><div class="row gap12"><div class="grow"><b>' + esc(e.username) + '</b> ' + esc(e.text) + '<div class="small muted" style="margin-top:3px">' + ago(e.created_at) + (e.cheers ? ' · ' + e.cheers + ' cheer' + (e.cheers === 1 ? '' : 's') : '') + '</div></div>' +
-    (e.type === 'recipe' ? '<button class="btn outline sm" data-a="recipe-open" data-id="' + e.ref_id + '">View</button>' : e.user_id !== S.me.id ? '<button class="btn sm" data-a="cheer" data-id="' + e.id + '" style="' + (e.cheered ? '' : 'background:#17240f;color:var(--lime);border:1px solid rgba(163,230,53,.4)') + '">' + IF(HEART) + 'Cheer</button>' : '') + '</div></div>').join('') : '<div class="card muted">Nothing yet. Finish a workout to be the first post!</div>';
+    (e.type === 'recipe' ? '<button class="btn outline sm" data-a="recipe-open" data-id="' + e.ref_id + '">View</button>' : e.user_id !== S.me.id ? '<button class="btn sm" data-a="cheer" data-id="' + e.id + '" style="' + (e.cheered ? '' : 'background:var(--limebg);color:var(--lime);border:1px solid rgba(163,230,53,.4)') + '">' + IF(HEART) + 'Cheer</button>' : '') + '</div></div>').join('') : '<div class="card muted">Nothing yet. Finish a workout to be the first post!</div>';
   if (fr.friends.length) h += '<div class="eyebrow" style="margin:18px 0 10px">Your friends</div><div class="card tight">' + fr.friends.map((x) => '<div class="row gap12" style="padding:6px 0">' + avatar(x.username) + '<div class="grow"><b>' + esc(x.username) + '</b></div>' + ext('nudge', x) + '<button class="btn alt sm" data-a="friend-remove" data-id="' + x.id + '">Remove</button></div>').join('') + '</div>';
   h += '<p class="small muted" style="font-size:12px;line-height:1.5;margin-top:12px">Friends see your workouts and streaks. Your weight, food and body stats stay private.</p>';
   setApp(h);
@@ -700,7 +782,7 @@ async function viewHistory() {
   for (let i = 0; i < lead; i++) cal += '<b class="none"></b>';
   for (let n = 1; n <= days; n++) { const ds = Y + '-' + pad(M) + '-' + pad(n); cal += '<b class="' + (d.days.indexOf(ds) >= 0 ? 'on ' : '') + (ds === td ? 'today' : '') + '">' + n + '</b>'; }
   const monthName = first.toLocaleDateString(undefined, { month: 'long' });
-  let h = '<div class="head"><div><h1 class="title">History</h1><p class="sub">' + d.month_sessions + ' workout' + (d.month_sessions === 1 ? '' : 's') + ' in ' + monthName + '</p></div><div class="row gap8"><button class="sq" data-a="hist-month" data-d="-1" aria-label="Previous month">' + I('back') + '</button><button class="sq" data-a="hist-month" data-d="1" aria-label="Next month">' + I('next') + '</button></div></div>';
+  let h = '<button class="howlink" data-a="tab" data-t="me">' + I('back') + ' Me</button><div class="head"><div><h1 class="title">History</h1><p class="sub">' + d.month_sessions + ' workout' + (d.month_sessions === 1 ? '' : 's') + ' in ' + monthName + '</p></div><div class="row gap8"><button class="sq" data-a="hist-month" data-d="-1" aria-label="Previous month">' + I('back') + '</button><button class="sq" data-a="hist-month" data-d="1" aria-label="Next month">' + I('next') + '</button></div></div>';
   h += '<div class="card"><h3 style="font-size:16px;margin-bottom:12px">' + monthName + ' ' + Y + '</h3><div class="cal">' + cal + '</div><div class="legend"><span><i></i>Worked out</span><span><i class="t"></i>Today</span></div></div>';
   h += '<div class="eyebrow" style="margin:18px 0 10px">Recent sessions</div>';
   h += d.recent.length ? d.recent.map((s) => {
@@ -726,9 +808,7 @@ async function pageSettings() {
     '<div class="row between" style="gap:14px;margin-bottom:12px"><div><b>Start next rest automatically</b><div class="small muted" style="font-size:12px;margin-top:2px">Rest begins when you tap a set</div></div><label class="sw"><input type="checkbox" data-c="auto"' + (p.auto_rest ? ' checked' : '') + '><i></i></label></div>' +
     '<div class="small cyan" id="push-note" style="font-weight:600">' + (S.pushOn ? '✓ Notifications allowed on this device' : 'Turn this on to get a buzz when your rest is over.' + (isIOS() && !isStandalone() ? ' On iPhone, add GymPulse to your Home Screen first.' : '')) + '</div>' +
     '<div class="row gap8" style="margin-top:12px"><button class="btn alt sm" data-a="test-push">Send a test alert</button></div></div>' +
-    '<div class="card hi"><div class="eyebrow cyan" style="font-size:10px;margin-bottom:8px">Live countdown on lock screen &amp; watch</div><p style="font-size:14px;line-height:1.5;margin-bottom:12px">A web app can\'t draw a countdown on your Watch itself. This hands each rest to Apple\'s own Timer, which shows on your lock screen, Dynamic Island and Apple Watch.</p>' +
-    '<div class="row between" style="margin-bottom:12px"><b>Start Apple Timer with each rest</b><label class="sw"><input type="checkbox" data-c="apple"' + (p.apple_timer ? ' checked' : '') + '><i></i></label></div>' +
-    '<button class="btn cyan block" data-a="shortcut-help">How to add the one-time Shortcut</button></div>' +
+    '<div class="card"><div class="row between" style="gap:14px"><div><b>Show a note when rest starts</b><div class="small muted" style="font-size:12px;margin-top:2px;line-height:1.4">A lock screen note like &quot;Back at 1:32 PM&quot; that also shows on your Apple Watch. It does not count down live, and it clears when the rest ends. Needs alerts turned on above.</div></div><label class="sw"><input type="checkbox" data-c="restnote"' + (p.rest_note ? ' checked' : '') + '><i></i></label></div></div>' +
     '<div class="card"><div class="row between"><div><b>Units</b><div class="small muted" style="font-size:12px">Pounds and feet / inches</div></div><span class="badge lime">lb</span></div></div>' +
     '<div id="x-set"></div><div class="card tight" data-a="routine" style="cursor:pointer"><div class="row between"><div><b>My workouts</b><div class="small muted" style="font-size:12px">Create workouts, add custom exercises and timers</div></div><span class="muted">' + I('next') + '</span></div></div>' +
     (S.me.role === 'admin' ? '<div class="card warn tight" data-a="admin" style="cursor:pointer"><div class="row between"><div><b>Manage users</b><div class="small muted" style="font-size:12px">Admin only · add users, reset passwords, backups</div></div><span class="amber">' + I('next') + '</span></div></div>' : '') +
@@ -752,9 +832,10 @@ async function pageRoutine() {
   if (S.plans.indexOf(S.plan) < 0) setPlan(S.plans[0]);
   const rt = S.routine.filter((r) => r.plan === S.plan);
   setPage('<div class="head back">' + backBtn() + '<div><h1 class="title" style="font-size:24px">My workouts</h1><p class="sub">Build as many as you like and pick one on the Today screen</p></div></div>' + planChips() +
-    '<div class="card">' + (rt.length ? rt.map((r, i) => '<div class="entry" style="' + (i === 0 ? 'border-top:0;padding-top:0' : '') + '"><div class="grow"><b>' + esc(r.name) + '</b><div class="small muted">' + exSub(r) + (r.category ? ' · ' + esc(r.category) : '') + '</div></div>' +
+    '<div class="card">' + (rt.length ? rt.map((r, i) => '<div class="entry" style="gap:10px;' + (i === 0 ? 'border-top:0;padding-top:0' : '') + '">' + thumbFor(r.name) + '<div class="grow" style="min-width:0"><b>' + esc(r.name) + '</b><div class="small muted">' + exSub(r) + (r.category ? ' · ' + esc(r.category) : '') + '</div></div>' +
       '<button class="sq" style="width:38px;height:38px" data-a="rt-move" data-id="' + r.id + '" data-dir="up"' + (i === 0 ? ' disabled' : '') + ' aria-label="Move up">↑</button><button class="sq" style="width:38px;height:38px" data-a="rt-move" data-id="' + r.id + '" data-dir="down"' + (i === rt.length - 1 ? ' disabled' : '') + ' aria-label="Move down">↓</button>' + exPencil('plan', r.id).replace('width:40px;height:40px', 'width:38px;height:38px') + '</div>').join('') : '<p class="muted">No exercises yet.</p>') + '</div>' +
     addButtons('plan') + '<div class="spacer"></div>' +
+    (rt.length && !S.session ? '<button class="btn block" data-a="start-workout" style="min-height:52px;margin-bottom:12px">Start this workout</button>' : '') +
     '<div class="card tight"><div class="eyebrow" style="font-size:10px;margin-bottom:10px">This workout: ' + esc(S.plan) + '</div><div class="row gap8 wrap"><button class="btn alt sm" data-a="plan-rename">Rename</button><button class="btn alt sm" data-a="plan-copy">Copy</button><button class="btn danger sm" data-a="plan-delete">Delete</button></div></div>' +
     (S.plan === 'Beginner routine' ? '<button class="btn alt block" data-a="rt-template">Reset Beginner routine to the original</button>' : ''));
 }
@@ -767,11 +848,6 @@ async function pageAdmin() {
     '<div class="card good"><p style="font-size:13px;line-height:1.6"><b class="lime">Standard</b> users see only their own workouts, stats and food.<br><b class="amber">Admins</b> can also add, disable and reset users, and download backups. Admins can\'t read other people\'s weight or food.</p></div>' +
     '<div id="x-set"></div><div class="card tight"><div class="row between"><div><b>Database backup</b><div class="small muted" style="font-size:12px">Nightly copies are kept in your appdata folder</div></div><a class="btn outline sm" href="/api/admin/backup" style="text-decoration:none">Download</a></div></div>');
   ext('afterPage', 'admin');
-}
-function shortcutHelp() {
-  sheet('<h2 class="title" style="font-size:22px">Add the one-time Shortcut</h2><p class="sub" style="margin-bottom:14px">Takes about a minute. You only do it once.</p>' +
-    '<ol class="plain"><li>Open the <b>Shortcuts</b> app on your iPhone and tap <b>+</b>.</li><li>Tap the name at the top and call it exactly <b>' + esc((S.profile && S.profile.shortcut_name) || 'GymPulse Timer') + '</b>.</li><li>Tap <b>Add Action</b>, search for <b>Start Timer</b> and add it.</li><li>Set the time to <b>Shortcut Input</b> and the unit to <b>seconds</b>.</li><li>Tap <b>Done</b>. Then turn on "Start Apple Timer with each rest" in Settings.</li></ol>' +
-    '<p class="small muted" style="margin-top:14px">iPhone will briefly show Shortcuts each time a rest starts. If it feels clunky, leave this off. The lock-screen alert still works without it.</p>');
 }
 function pwSheet() {
   sheet('<h2 class="title" style="font-size:22px">Change password</h2><div class="spacer"></div><div class="field"><input id="pw-old" type="password" placeholder="Current password" autocomplete="current-password"></div><div class="field"><input id="pw-new" type="password" placeholder="New password (8+ characters)" autocomplete="new-password"></div><button class="btn block" data-a="change-pw">Change password</button>');
@@ -818,6 +894,16 @@ const actions = {
   async setup() { try { await POST('/api/setup', { username: val('u'), password: val('p') }); boot(); } catch (e) { $('#e').textContent = e.userMessage || 'Could not create the account.'; } },
   async login() { try { await POST('/api/login', { username: val('u'), password: val('p'), remember: $('#keep') ? $('#keep').checked : true }); boot(); } catch (e) { $('#e').textContent = e.userMessage || 'Could not sign in.'; } },
   tab(el) { go(el.dataset.t); },
+  theme() { applyTheme(curTheme() === 'light' ? 'dark' : 'light'); },
+  'plan-open'() { openPage(pageRoutine, 'today'); },
+  'plan-edit'(el) { setPlan(el.dataset.p); openPage(pageRoutine, 'train'); },
+  'plan-start'(el) { setPlan(el.dataset.p); actions['start-workout'](); },
+  'train-level'(el) { S.tr.level = +el.dataset.v; rerenderTrain(); },
+  'train-len'(el) { S.tr.minutes = +el.dataset.v; rerenderTrain(); },
+  async 'train-build'() {
+    try { const r = await POST('/api/programs/build', { level: S.tr.level, minutes: S.tr.minutes }); setPlan(r.plan); toast('Workout ready: ' + r.plan); go('today'); } catch (e) { fail(e); }
+  },
+  async 'water-quick'() { try { await POST('/api/water', { date: todayStr(), add_oz: 8 }); go('today'); } catch (e) { fail(e); } },
   'close-page'() { closePage(); go(S.tab); },
   'start-workout'() {
     const list = S.routine.filter((r) => r.plan === S.plan); if (!list.length) return;
@@ -882,7 +968,6 @@ const actions = {
   guide() { openPage(async () => pageGuide(), 'today'); },
   routine() { openPage(pageRoutine); },
   admin() { openPage(pageAdmin); },
-  'shortcut-help'() { shortcutHelp(); },
   'pw-sheet'() { pwSheet(); },
   async 'save-name'() {
     try {
@@ -1004,12 +1089,12 @@ document.addEventListener('change', async (ev) => {
     if (c === 'alert') { if (ev.target.checked) { const ok = await enablePush(); if (!ok) ev.target.checked = false; } else await disablePush(); }
     else if (c === 'nudge') await PUT('/api/profile', { nudge: ev.target.checked });
     else if (c === 'auto') { await PUT('/api/profile', { auto_rest: ev.target.checked }); }
-    else if (c === 'apple') { await PUT('/api/profile', { apple_timer: ev.target.checked }); if (ev.target.checked) shortcutHelp(); }
+    else if (c === 'restnote') { await PUT('/api/profile', { rest_note: ev.target.checked }); }
     const pr = await GET('/api/profile'); S.profile = pr.profile;
   } catch (e) { fail(e); }
 });
 
-window.GP = { S, actions, api, GET, POST, PUT, DEL, toast, fail, val, esc, I, IF, P, sheet, closeSheet, openPage, setPage, closePage, backBtn, go, todayStr, shiftDate, fmtDate, ago, r0, avatar, defaultMeal, debounce, ftIn, $, pad, clearCache, pollNotes, bell, rerunPage, lbs, mmss, outbox, flushOutbox };
+window.GP = { slugFor, loadGuide, thumbFor, tools, S, actions, api, GET, POST, PUT, DEL, toast, fail, val, esc, I, IF, P, sheet, closeSheet, openPage, setPage, closePage, backBtn, go, todayStr, shiftDate, fmtDate, ago, r0, avatar, defaultMeal, debounce, ftIn, $, pad, clearCache, pollNotes, bell, rerunPage, lbs, mmss, outbox, flushOutbox };
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 boot();
 })();

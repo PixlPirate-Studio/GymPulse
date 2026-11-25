@@ -37,8 +37,9 @@ import social_plus
 import food_plus
 import guide
 import tidy
+import programs
 
-MODULES = [api_tokens, workouts_plus, social_plus, food_plus, guide, tidy]
+MODULES = [api_tokens, workouts_plus, social_plus, food_plus, guide, tidy, programs]
 
 APP_VERSION = "1.0.0"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -296,7 +297,8 @@ def create_app():
                                    ("session_exercises", "category", "TEXT DEFAULT ''"),
                                    ("session_exercises", "note", "TEXT DEFAULT ''"),
                                    ("session_exercises", "reps", "TEXT DEFAULT ''"),
-                                   ("session_exercises", "seconds", "INTEGER NOT NULL DEFAULT 75")))
+                                   ("session_exercises", "seconds", "INTEGER NOT NULL DEFAULT 75"),
+                                   ("profiles", "rest_note", "INTEGER NOT NULL DEFAULT 1")))
         for mod in MODULES:
             boot.executescript(mod.SCHEMA)
             add_missing_columns(boot, getattr(mod, "MIGRATIONS", ()))
@@ -656,13 +658,12 @@ def create_app():
         wpw = int(num(b.get("workouts_per_week"), 1, 7, cur["workouts_per_week"] or 3))
         nudge = int(bool(b["nudge"])) if "nudge" in b else cur["nudge"]
         auto = int(bool(b["auto_rest"])) if "auto_rest" in b else cur["auto_rest"]
-        apple = int(bool(b["apple_timer"])) if "apple_timer" in b else cur["apple_timer"]
-        sc = text(b.get("shortcut_name"), 60) or cur["shortcut_name"] if "shortcut_name" in b else cur["shortcut_name"]
+        rnote = int(bool(b["rest_note"])) if "rest_note" in b else cur["rest_note"]
         age = int(age) if age else None
         db().execute(
             "UPDATE profiles SET age=?,sex=?,height_in=?,goal_weight_lb=?,activity=?,"
-            "workouts_per_week=?,nudge=?,auto_rest=?,apple_timer=?,shortcut_name=? WHERE user_id=?",
-            (age, sex, height, goal, act, wpw, nudge, auto, apple, sc, uid))
+            "workouts_per_week=?,nudge=?,auto_rest=?,rest_note=? WHERE user_id=?",
+            (age, sex, height, goal, act, wpw, nudge, auto, rnote, uid))
         db().commit()
         return api_profile_get()
 
@@ -1519,11 +1520,16 @@ def create_app():
         secs = int(num(b.get("seconds"), 3, 7200, 0))
         if not secs:
             return err("Bad time.")
-        p = one("SELECT nudge FROM profiles WHERE user_id=?", (g.user["id"],))
+        p = one("SELECT nudge, rest_note FROM profiles WHERE user_id=?", (g.user["id"],))
         db().execute("DELETE FROM alerts WHERE user_id=?", (g.user["id"],))
         db().execute("INSERT INTO alerts(user_id,due_at,title,body,nudges_left) VALUES(?,?,?,?,?)",
                      (g.user["id"], now() + secs + 1, text(b.get("title"), 80) or "Time's up!",
                       text(b.get("body"), 140) or "Your timer is done.", 2 if p and p["nudge"] else 0))
+        note = b.get("start_note")
+        if p and p["rest_note"] and isinstance(note, dict) and text(note.get("title"), 80):
+            # nudges_left = -1 marks a "rest started" note: sent right away, never repeated
+            db().execute("INSERT INTO alerts(user_id,due_at,title,body,nudges_left) VALUES(?,?,?,?,-1)",
+                         (g.user["id"], now(), text(note.get("title"), 80), text(note.get("body"), 140)))
         db().commit()
         return jsonify({"ok": True})
 
@@ -1539,10 +1545,10 @@ def create_app():
         db().commit()
         return jsonify({"ok": True})
 
-    def send_push(sub_json, title, body_text):
+    def send_push(sub_json, title, body_text, start=False):
         from pywebpush import webpush
         webpush(subscription_info=json.loads(sub_json),
-                data=json.dumps({"title": title, "body": body_text}),
+                data=json.dumps({"title": title, "body": body_text, "start": bool(start)}),
                 vapid_private_key=vapid["path"],
                 vapid_claims={"sub": os.environ.get("GYMPULSE_VAPID_SUBJECT", "mailto:gympulse@example.com")},
                 ttl=120)
@@ -1559,7 +1565,10 @@ def create_app():
                 subs = [dict(r) for r in conn.execute("SELECT * FROM push_subs WHERE user_id=?", (a["user_id"],)).fetchall()]
                 for s in subs:
                     try:
-                        app.send_push(s["sub_json"], a["title"], a["body"])
+                        if a["nudges_left"] == -1:
+                            app.send_push(s["sub_json"], a["title"], a["body"], start=True)
+                        else:
+                            app.send_push(s["sub_json"], a["title"], a["body"])
                     except Exception as exc:
                         code = getattr(getattr(exc, "response", None), "status_code", None)
                         if code in (404, 410):

@@ -158,6 +158,12 @@ G = [
      ["Lie on your back with knees bent and feet flat.", "Cross your arms over your chest."],
      ["Curl your shoulders off the floor by squeezing your stomach.", "Lower slowly."], ["Pulling on your neck.", "Using momentum."],
      "Look at the ceiling and keep a fist-size gap under your chin."),
+    ("db-shoulder-press", "Dumbbell Shoulder Press", "Shoulders", "sets", 3, "10-12", 75,
+     ["dumbbell shoulder press", "db shoulder press", "seated dumbbell press", "overhead dumbbell press"], "Shoulders and back of arms",
+     ["Sit on a bench with a back pad, or stand tall. Pick two light dumbbells.", "Hold them at shoulder height with palms facing forward."],
+     ["Press both dumbbells straight up until your arms are almost straight.", "Pause, then lower slowly back to shoulder height. Breathe out as you press."],
+     ["Arching your lower back as you press.", "Letting the dumbbells drift far in front of you.", "Using weights that are too heavy to control."],
+     "If the weights wobble, go lighter. Control matters more than weight."),
     ("pec-fly", "Pec Fly Machine", "Chest & Arms", "sets", 3, "12-15", 60,
      ["chest fly", "pec deck", "butterfly machine"], "Chest",
      ["Adjust the seat so the handles are at chest height.", "Sit tall with your back on the pad."],
@@ -173,7 +179,7 @@ G = [
 
 def card(row, full=True):
     d = {"slug": row[0], "name": row[1], "category": row[2], "kind": row[3], "sets_total": row[4],
-         "reps": row[5], "seconds": row[6], "muscles": row[8]}
+         "reps": row[5], "seconds": row[6], "muscles": row[8], "aliases": row[7]}
     if full:
         d.update({"setup": row[9], "how": row[10], "mistakes": row[11], "tip": row[12]})
     return d

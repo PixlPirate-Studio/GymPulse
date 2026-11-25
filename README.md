@@ -9,7 +9,9 @@ A self-hosted workout timer, food diary, body-stats tracker and friends feed. On
 - A beginner routine you can fully change, with any number of named workouts. Tap sets as you finish them and the rest timer starts. Timed exercises (treadmill, elliptical) have a Start button.
 - **Weight and reps for every set**, a "last time" reminder under each exercise, and automatic **personal bests**.
 - **Works with no signal.** A workout in progress is kept on the phone and uploaded when you are back online. Weight, water, food and measurement entries made offline wait in a queue and sync later.
-- **How-to cards** for 26 common exercises (written steps, no videos), plus an "add to my workout" library.
+- **Animated exercise pictures** for 27 moves (drawn in the app, no videos), showing the muscles each one works, with written steps and an "add to my workout" library.
+- **Plan my workout:** pick a level (3 choices) and a gym time (20, 30, 45 or 60 min) and the app builds a well-rounded beginner workout: warm-up, legs, chest, back, core (plus shoulders at 45+ min) and a stretch. Sets, reps and rest are simple beginner picks, not medical advice.
+- **Light and dark mode** with a sun/moon button in the top right. Five tabs: Today, Train, Food, Friends, Me.
 - Lock-screen alerts when a rest ends, and **scheduled workout reminders** (Web Push, mirrors to Apple Watch).
 - Body stats in lb and ft/in: BMI, healthy range, daily calories, weight chart, **body measurements**, **private progress photos**, streak and CDC weekly goals.
 - Food diary with calories and macros: 38 built-in foods, the free USDA database (optional import), packaged foods by **camera barcode scan** or number (Open Food Facts), your own foods, **saved meals**, **copy yesterday**, **water tracking**, and a **grocery list** you can fill from any recipe.

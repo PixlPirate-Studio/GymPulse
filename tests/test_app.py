@@ -238,7 +238,7 @@ def test_alerts_sent_and_nudged(app):
     c = client(app)
     setup_admin(c)
     sent = []
-    app.send_push = lambda sub, title, body: sent.append((title, body))
+    app.send_push = lambda sub, title, body, start=False: sent.append((title, body))
     c.post("/api/push/subscribe", json={"subscription": {"endpoint": "https://push.example/abc", "keys": {}}}, headers=H)
     c.post("/api/timer", json={"seconds": 3, "title": "Rest is over"}, headers=H)
     conn = sqlite3.connect(os.path.join(os.environ["GYMPULSE_DATA"], "gympulse.db"))
@@ -250,6 +250,27 @@ def test_alerts_sent_and_nudged(app):
     assert left == (1, 1)  # a gentle repeat is queued
     c.delete("/api/timer", headers=H)
     assert conn.execute("SELECT COUNT(*) FROM alerts").fetchone()[0] == 0
+
+
+def test_rest_start_note(app):
+    c = client(app)
+    setup_admin(c)
+    sent = []
+    app.send_push = lambda sub, title, body, start=False: sent.append((title, body, start))
+    c.post("/api/push/subscribe", json={"subscription": {"endpoint": "https://push.example/note", "keys": {}}}, headers=H)
+    note = {"title": "Back at 1:32 PM", "body": "Rest - Bench - 1:30 min"}
+    c.post("/api/timer", json={"seconds": 90, "title": "Rest is over", "start_note": note}, headers=H)
+    app.process_alerts()
+    assert sent == [("Back at 1:32 PM", "Rest - Bench - 1:30 min", True)]  # sent now, not repeated
+    conn = sqlite3.connect(os.path.join(os.environ["GYMPULSE_DATA"], "gympulse.db"))
+    assert conn.execute("SELECT COUNT(*) FROM alerts WHERE title='Rest is over'").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM alerts WHERE nudges_left=-1").fetchone()[0] == 0
+    # turned off in Settings: no start note is made
+    c.put("/api/profile", json={"rest_note": False}, headers=H)
+    sent.clear()
+    c.post("/api/timer", json={"seconds": 90, "title": "Rest is over", "start_note": note}, headers=H)
+    app.process_alerts()
+    assert sent == []
 
 
 def test_backup_download(app):
@@ -376,3 +397,31 @@ def test_display_names(app):
     a.put("/api/account", json={"display_name": "Alex Smith"}, headers=H)
     u = [x for x in a.get("/api/admin/users").get_json()["users"] if x["username"] == "admin"][0]
     assert u["display_name"] == "Alex Smith"
+
+
+def test_programs_preview_and_build(app):
+    c = client(app)
+    setup_admin(c)
+    for level in (0, 1, 2):
+        for minutes in (20, 30, 45, 60):
+            r = c.get("/api/programs/preview?level=%d&minutes=%d" % (level, minutes))
+            assert r.status_code == 200
+            d = r.get_json()
+            for g in ("Legs", "Chest", "Back", "Core"):
+                assert g in d["groups"]
+            assert abs(d["est_min"] - minutes) <= 8
+    r = c.post("/api/programs/build", json={"level": 1, "minutes": 30}, headers=H)
+    assert r.status_code == 200
+    name = r.get_json()["plan"]
+    r2 = c.post("/api/programs/build", json={"level": 1, "minutes": 30}, headers=H)
+    assert r2.get_json()["plan"] != name
+    rt = c.get("/api/routine").get_json()
+    assert any(x["plan"] == name for x in rt["routine"])
+
+
+def test_guide_has_aliases_and_animation_slugs(app):
+    c = client(app)
+    setup_admin(c)
+    cards = c.get("/api/exercise-guide").get_json()["cards"]
+    assert cards and all("aliases" in x for x in cards)
+    assert any(x["slug"] == "db-shoulder-press" for x in cards)

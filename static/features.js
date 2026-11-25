@@ -295,28 +295,40 @@ actions['inv-accept'] = async (el) => {
   catch (e) { $('#e').textContent = e.userMessage || 'Could not create the account.'; }
 };
 
-// ---------------------------------------------------------------- exercise how-to
-const guideBody = (c) => '<p class="small muted" style="margin-bottom:12px">' + esc(c.category) + ' · works ' + esc(c.muscles.toLowerCase()) + '</p>' +
+// ---------------------------------------------------------------- exercise how-to (animated)
+const GA = () => window.GPAnim;
+const guideBody = (c) => (GA() && GA().has(c.slug) ? GA().stage(c.slug, { name: c.name }) : '') +
+  '<p class="small muted" style="margin:12px 0">' + esc(c.category) + ' · works ' + esc(c.muscles.toLowerCase()) + '</p>' +
   '<div class="flabel">Set up</div><ol class="plain">' + c.setup.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ol>' +
   '<div class="flabel" style="margin-top:12px">Do it</div><ol class="plain">' + c.how.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ol>' +
   '<div class="flabel" style="margin-top:12px">Common mistakes</div><ul class="plain" style="padding-left:18px;line-height:1.6">' + c.mistakes.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul>' +
   '<div class="card good tight" style="margin-top:12px"><b class="lime">Tip:</b> ' + esc(c.tip) + '</div>' +
+  (GA() && GA().has(c.slug) ? '<div class="flabel" style="margin-top:14px">Muscles it works</div>' + GA().map(c.slug) : '') +
   '<p class="small muted" style="margin-top:10px">Start light. Stop if anything hurts, and ask gym staff to check your form.</p>';
 actions.howto = async (el) => {
   try {
     const c = (await GET('/api/exercise-guide?name=' + encodeURIComponent(el.dataset.name))).card;
-    sheet('<h2 class="title" style="font-size:22px">' + esc(c ? c.name : el.dataset.name) + '</h2>' + (c ? guideBody(c) : '<p class="sub" style="margin-top:8px">We don\'t have a how-to card for this one yet. Ask gym staff to show you the settings, and start with a light weight.</p>'));
+    sheet('<h2 class="title" style="font-size:22px;margin-bottom:12px">' + esc(c ? c.name : el.dataset.name) + '</h2>' + (c ? guideBody(c) : '<p class="sub" style="margin-top:8px">We don\'t have a how-to card for this one yet. Ask gym staff to show you the settings, and start with a light weight.</p>'));
   } catch (e) { fail(e); }
 };
-actions.lib = () => openPage(async () => {
-  const cards = (await GET('/api/exercise-guide')).cards, cats = {};
-  cards.forEach((c) => { (cats[c.category] = cats[c.category] || []).push(c); });
-  setPage('<div class="head back">' + backBtn() + '<div><h1 class="title" style="font-size:24px">How-to library</h1><p class="sub">Tap one to see how it is done</p></div></div>' +
-    Object.keys(cats).sort().map((k) => '<div class="eyebrow" style="margin:14px 0 8px">' + esc(k) + '</div>' + cats[k].map((c) => '<div class="card tight" data-a="lib-open" data-slug="' + c.slug + '" style="cursor:pointer"><div class="row between"><div><b>' + esc(c.name) + '</b><div class="small muted" style="font-size:12px">' + (c.kind === 'timed' ? G.mmss(c.seconds) + ' timer' : c.sets_total + ' sets of ' + esc(c.reps)) + '</div></div><span class="muted">' + I('next') + '</span></div></div>').join('')).join(''));
-}, 'today');
+let libFilter = 'All';
+async function pageLib() {
+  const cards = (await GET('/api/exercise-guide')).cards;
+  const order = GA() ? GA().order : [];
+  const gof = (c) => (GA() && GA().has(c.slug) ? GA().groups(c.slug)[0] : null) || 'Other';
+  const groups = ['All'].concat(order.filter((g) => cards.some((c) => gof(c) === g)));
+  if (cards.some((c) => gof(c) === 'Other')) groups.push('Other');
+  if (groups.indexOf(libFilter) < 0) libFilter = 'All';
+  const list = cards.filter((c) => libFilter === 'All' || gof(c) === libFilter);
+  setPage('<div class="head back">' + backBtn() + '<div><h1 class="title" style="font-size:24px">Exercise library</h1><p class="sub">' + cards.length + ' moves, each with an animated picture</p></div></div>' +
+    '<div class="mesegs">' + groups.map((g) => '<button data-a="lib-filter" data-g="' + esc(g) + '" class="' + (libFilter === g ? 'on' : '') + '">' + esc(g) + '</button>').join('') + '</div>' +
+    list.map((c) => '<div class="xrow" data-a="lib-open" data-slug="' + c.slug + '">' + (GA() && GA().has(c.slug) ? GA().thumb(c.slug, { name: c.name }) : '<div class="athumb"></div>') + '<div class="grow" style="min-width:0"><b>' + esc(c.name) + '</b><div class="xm">' + (c.kind === 'timed' ? G.mmss(c.seconds) + ' timer' : c.sets_total + ' sets of ' + esc(c.reps)) + '</div><div class="xf">' + esc(c.muscles) + '</div></div>' + I('next', 'go') + '</div>').join(''));
+}
+actions.lib = () => openPage(pageLib, 'me');
+actions['lib-filter'] = (el) => { libFilter = el.dataset.g; pageLib(); };
 actions['lib-open'] = async (el) => {
   const c = (await GET('/api/exercise-guide/' + el.dataset.slug)).card;
-  sheet('<h2 class="title" style="font-size:22px">' + esc(c.name) + '</h2>' + guideBody(c) + '<button class="btn block" style="margin-top:14px" data-a="lib-add" data-slug="' + c.slug + '">Add to "' + esc(S.plan) + '"</button>');
+  sheet('<h2 class="title" style="font-size:22px;margin-bottom:12px">' + esc(c.name) + '</h2>' + guideBody(c) + '<button class="btn block" style="margin-top:14px" data-a="lib-add" data-slug="' + c.slug + '">Add to "' + esc(S.plan) + '"</button>');
 };
 actions['lib-add'] = async (el) => {
   try {
