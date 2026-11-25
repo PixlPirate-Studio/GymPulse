@@ -812,6 +812,7 @@ async function pageSettings() {
     '<div class="card"><div class="row between"><div><b>Units</b><div class="small muted" style="font-size:12px">Pounds and feet / inches</div></div><span class="badge lime">lb</span></div></div>' +
     '<div id="x-set"></div><div class="card tight" data-a="routine" style="cursor:pointer"><div class="row between"><div><b>My workouts</b><div class="small muted" style="font-size:12px">Create workouts, add custom exercises and timers</div></div><span class="muted">' + I('next') + '</span></div></div>' +
     (S.me.role === 'admin' ? '<div class="card warn tight" data-a="admin" style="cursor:pointer"><div class="row between"><div><b>Manage users</b><div class="small muted" style="font-size:12px">Admin only · add users, reset passwords, backups</div></div><span class="amber">' + I('next') + '</span></div></div>' : '') +
+    '<div class="card tight" data-a="reset-sheet" style="cursor:pointer"><div class="row between"><div><b>Start fresh</b><div class="small muted" style="font-size:12px">Clear test workouts, badges, food or weigh-ins</div></div><span class="muted">' + I('next') + '</span></div></div>' +
     '<div class="row gap8"><button class="btn alt" style="flex:1" data-a="pw-sheet">Change password</button><button class="btn alt" style="flex:1;color:var(--rose)" data-a="logout">Sign out</button></div>' +
     '<p class="small muted" style="text-align:center;margin-top:16px;font-size:12px">GymPulse is for general fitness and is not medical advice. Check with your doctor before starting a new exercise or eating plan.</p>');
   ext('afterPage', 'settings');
@@ -969,6 +970,23 @@ const actions = {
   routine() { openPage(pageRoutine); },
   admin() { openPage(pageAdmin); },
   'pw-sheet'() { pwSheet(); },
+  'reset-sheet'() {
+    sheet('<h2 class="title" style="font-size:22px">Start fresh</h2><p class="sub" style="margin-bottom:14px">Pick what to clear. This only affects your account and cannot be undone. Your saved workouts, settings and friends stay.</p>' +
+      '<label class="check" style="margin-bottom:12px"><input type="checkbox" id="rs-w" checked> <span><b>Workout history and badges</b><br><span class="small muted">Past workouts, personal bests, streak, badges and your activity posts</span></span></label>' +
+      '<label class="check" style="margin-bottom:12px"><input type="checkbox" id="rs-f"> <span><b>Food and water</b><br><span class="small muted">Everything in your food diary</span></span></label>' +
+      '<label class="check" style="margin-bottom:14px"><input type="checkbox" id="rs-b"> <span><b>Weight and measurements</b><br><span class="small muted">Weigh-ins and body measurements</span></span></label>' +
+      '<button class="btn danger block" data-a="reset-go">Clear selected</button>');
+  },
+  async 'reset-go'() {
+    const what = [['rs-w', 'workouts'], ['rs-f', 'food'], ['rs-b', 'body']].filter((x) => $('#' + x[0]) && $('#' + x[0]).checked).map((x) => x[1]);
+    if (!what.length) return toast('Tick at least one thing to clear.');
+    if (!confirm('Clear the selected data? This cannot be undone.')) return;
+    try {
+      await POST('/api/reset', { what });
+      if (what.indexOf('workouts') >= 0) { S.doc = null; persistDoc(); bindDoc(); stopTimer(); }
+      clearCache(); closeSheet(); toast('All clear. Fresh start!'); go('today');
+    } catch (e) { fail(e); }
+  },
   async 'save-name'() {
     try {
       const r = await PUT('/api/account', { display_name: val('dn') });

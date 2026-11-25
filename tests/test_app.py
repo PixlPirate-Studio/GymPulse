@@ -425,3 +425,20 @@ def test_guide_has_aliases_and_animation_slugs(app):
     cards = c.get("/api/exercise-guide").get_json()["cards"]
     assert cards and all("aliases" in x for x in cards)
     assert any(x["slug"] == "db-shoulder-press" for x in cards)
+
+
+def test_reset_clears_workouts_and_badges(app):
+    c = client(app)
+    setup_admin(c)
+    import time
+    now = int(time.time())
+    r = c.post("/api/sync/workout", json={"cid": "r1", "date": "2026-11-20", "started_at": now - 3000, "ended_at": now,
+               "exercises": [{"cid": "x", "name": "Leg Press", "kind": "sets", "sets_total": 2, "sets_done": 2, "completed": True,
+                              "sets": [{"set_no": 1, "weight_lb": 50, "reps": 10}]}]}, headers=H)
+    assert r.status_code == 200
+    c.get("/api/badges")
+    assert c.get("/api/history?month=2026-11").get_json()["recent"]
+    assert c.post("/api/reset", json={"what": []}, headers=H).status_code == 400
+    assert c.post("/api/reset", json={"what": ["workouts"]}, headers=H).status_code == 200
+    assert not c.get("/api/history?month=2026-11").get_json()["recent"]
+    assert not [b for b in c.get("/api/badges").get_json()["badges"] if b["earned_at"]]
